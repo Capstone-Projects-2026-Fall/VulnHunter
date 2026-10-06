@@ -2,6 +2,8 @@ import sys
 import os
 import subprocess
 
+# This Is Example 2 GUI That Will Be Preesented To The Stakeholder----------- 
+
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -12,17 +14,28 @@ from PyQt6.QtWidgets import (
     QTextEdit
 )
 
+# Test to connecting both windows and mac to make it work 
+    # mac user tries to run, with the new "["dir"] or ["ls"]"
+
+
 # Keep track of the directory
 current_directory = os.getcwd()
 
+def windows_converter():
+    pass
+
 
 def run_ls():
+    
+    # Make This Run For Both Windows And Mac 
     result = subprocess.run(
-        ["ls"],
+        ["dir"] or ["ls"],
         cwd=current_directory,
         capture_output=True,
-        text=True
+        text=True,
+        shell=True
     )
+
 
     output_box.setText(result.stdout)
 
