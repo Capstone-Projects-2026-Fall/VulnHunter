@@ -27,9 +27,11 @@ def windows_converter():
 
 def run_ls():
     
+    command = "dir" if os.name == "nt" else "ls"
+    
     # Make This Run For Both Windows And Mac 
     result = subprocess.run(
-        ["dir"] or ["ls"],
+        command,
         cwd=current_directory,
         capture_output=True,
         text=True,
