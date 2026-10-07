@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>780</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>VulnHunter</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="horizontalLayout_main" stretch="3,2">
+    <property name="spacing">
+     <number>16</number>
+    </property>
+    <item>
+     <widget class="QFrame" name="frame_vulnhunt">
+      <property name="frameShape">
+       <enum>QFrame::Shape::StyledPanel</enum>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_vulnhunt">
+       <item>
+        <widget class="QLabel" name="label_title">
+         <property name="font">
+          <font>
+           <pointsize>26</pointsize>
+           <bold>true</bold>
+          </font>
+         </property>
+         <property name="text">
+          <string>VulnHunt</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QSplitter" name="splitter_vulnhunt">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <widget class="QTabWidget" name="tabWidget_phases">
+          <property name="tabPosition">
+           <enum>QTabWidget::TabPosition::South</enum>
+          </property>
+          <property name="currentIndex">
+           <number>0</number>
+          </property>
+          <widget class="QWidget" name="tab_scan">
+           <attribute name="title">
+            <string>Scan</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_tabScan">
+            <item>
+             <widget class="QTextBrowser" name="textBrowser_scan">
+              <property name="placeholderText">
+               <string>Scan results will appear here.</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_fix">
+           <attribute name="title">
+            <string>Fix</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_tabFix">
+            <item>
+             <widget class="QTextBrowser" name="textBrowser_fix">
+              <property name="placeholderText">
+               <string>Fix results will appear here.</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_verify">
+           <attribute name="title">
+            <string>Verify</string>
+           </attribute>
+           <layout class="QVBoxLayout" name="verticalLayout_tabVerify">
+            <item>
+             <widget class="QTextBrowser" name="textBrowser_verify">
+              <property name="placeholderText">
+               <string>Verify results will appear here.</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QWidget" name="tab_add">
+           <attribute name="title">
+            <string>+</string>
+           </attribute>
+          </widget>
+         </widget>
+         <widget class="QGroupBox" name="groupBox_logs">
+          <property name="title">
+           <string>Logs</string>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_logs">
+           <item>
+            <widget class="QPlainTextEdit" name="plainTextEdit_log">
+             <property name="readOnly">
+              <bool>true</bool>
+             </property>
+             <property name="placeholderText">
+              <string>Scanner output will stream here.</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_actions">
+         <item>
+          <widget class="QPushButton" name="pushButton_scan">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Scan</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_fix">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Fix</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="pushButton_verify">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Verify</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QVBoxLayout" name="verticalLayout_right" stretch="2,3,0">
+      <item>
+       <widget class="QGroupBox" name="groupBox_repos">
+        <property name="title">
+         <string>Repos / Codebases</string>
+        </property>
+        <layout class="QVBoxLayout" name="verticalLayout_repos">
+         <item>
+          <widget class="QListWidget" name="listWidget_repos"/>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_repoTools">
+           <item>
+            <widget class="QToolButton" name="toolButton_removeRepo">
+             <property name="toolTip">
+              <string>Remove repo</string>
+             </property>
+             <property name="text">
+              <string>−</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_repoLeft">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QToolButton" name="toolButton_repoSettings">
+             <property name="toolTip">
+              <string>Repo settings</string>
+             </property>
+             <property name="text">
+              <string>⚙</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="horizontalSpacer_repoRight">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+           <item>
+            <widget class="QToolButton" name="toolButton_addRepo">
+             <property name="toolTip">
+              <string>Add repo</string>
+             </property>
+             <property name="text">
+              <string>+</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <spacer name="verticalSpacer_right">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>40</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayout_optional">
+        <item>
+         <spacer name="horizontalSpacer_optional">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QToolButton" name="toolButton_optional">
+          <property name="minimumSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="toolTip">
+           <string>Optional</string>
+          </property>
+          <property name="text">
+           <string>⊗</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
