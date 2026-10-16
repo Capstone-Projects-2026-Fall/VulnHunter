@@ -14,42 +14,44 @@ from mock_data import SAMPLE_FINDINGS, SAMPLE_OUTPUT, ScanRecord
 
 
 STYLE = """
-QWidget { color: #EDE6EA; font-size: 14px; }
-QMainWindow, QWidget#root { background: #15121A; }
-QDialog, QMessageBox { background: #1F1A24; }
-QFrame#header { background: #4A1424; border: 0; border-bottom: 1px solid #8B1E3F; }
+QWidget { color: #E6EEF8; font-size: 14px; }
+QMainWindow, QWidget#root { background: #0A1424; }
+QDialog, QMessageBox { background: #111E33; }
+QFrame#header { background: #0F2747; border: 0; border-bottom: 1px solid #1F4E8C; }
+QFrame#card { background: #111E33; border: 1px solid #243B5C; border-radius: 5px; }
+QFrame#card QLabel { background: transparent; }
 QPushButton#home {
-    background: transparent; border: 0; color: #FFFFFF; font-size: 20px;
+    background: transparent; border: 0; color: #E6EEF8; font-size: 20px;
     font-weight: 600; padding: 0 12px;
 }
 QLabel#title { font-size: 24px; font-weight: 600; }
 QCheckBox { background: transparent; }
 QLineEdit, QComboBox {
-    background: #1F1A24; border: 1px solid #4A3B52; border-radius: 5px; padding: 8px 10px;
+    background: #111E33; border: 1px solid #243B5C; border-radius: 5px; padding: 8px 10px;
 }
-QLineEdit:focus, QComboBox:focus { border: 1px solid #B04A68; }
+QLineEdit:focus, QComboBox:focus { border: 1px solid #38BDF8; }
 QComboBox QAbstractItemView {
-    background: #1F1A24; color: #EDE6EA; selection-background-color: #5A1F35;
-    selection-color: #FFFFFF; border: 1px solid #4A3B52;
+    background: #111E33; color: #E6EEF8; selection-background-color: #1B4B7A;
+    selection-color: #E6EEF8; border: 1px solid #243B5C;
 }
 QPushButton {
-    background: #2A2230; border: 1px solid #4A3B52; border-radius: 5px; padding: 9px 22px;
+    background: #111E33; border: 1px solid #243B5C; border-radius: 5px; padding: 9px 22px;
 }
-QPushButton:hover { background: #352B3D; }
-QPushButton:disabled { color: #7E7280; background: #221C28; }
-QPushButton#primary { background: #8B1E3F; color: #FFFFFF; border: 0; font-weight: 600; }
-QPushButton#primary:hover { background: #A32850; }
-QPushButton#primary:disabled { background: #4A2432; color: #9A8590; }
+QPushButton:hover { background: #172A47; }
+QPushButton:disabled { color: #7F93AD; background: #0A1424; }
+QPushButton#primary { background: #38BDF8; color: #05101F; border: 0; font-weight: 600; }
+QPushButton#primary:hover { background: #7DD3FC; }
+QPushButton#primary:disabled { background: #243B5C; color: #7F93AD; }
 QTableWidget {
-    background: #1F1A24; border: 1px solid #3A2F40; gridline-color: #332A3A;
-    selection-background-color: #5A1F35; selection-color: #FFFFFF;
+    background: #111E33; border: 1px solid #243B5C; gridline-color: #243B5C;
+    selection-background-color: #1B4B7A; selection-color: #E6EEF8;
 }
-QHeaderView::section { background: #2A2230; border: 0; padding: 9px 12px; font-weight: 600; }
-QPlainTextEdit { background: #100D14; border: 1px solid #3A2F40; color: #D8C9D0; }
-QScrollBar:vertical { background: #1F1A24; width: 12px; margin: 0; }
-QScrollBar::handle:vertical { background: #4A3B52; border-radius: 5px; min-height: 24px; }
-QScrollBar:horizontal { background: #1F1A24; height: 12px; margin: 0; }
-QScrollBar::handle:horizontal { background: #4A3B52; border-radius: 5px; min-width: 24px; }
+QHeaderView::section { background: #172A47; border: 0; padding: 9px 12px; font-weight: 600; }
+QPlainTextEdit { background: #08101D; border: 1px solid #243B5C; color: #E6EEF8; }
+QScrollBar:vertical { background: #111E33; width: 12px; margin: 0; }
+QScrollBar::handle:vertical { background: #243B5C; border-radius: 5px; min-height: 24px; }
+QScrollBar:horizontal { background: #111E33; height: 12px; margin: 0; }
+QScrollBar::handle:horizontal { background: #243B5C; border-radius: 5px; min-width: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 """
 
@@ -82,24 +84,47 @@ class HistoryPage(QWidget):
         top.addStretch()
         top.addWidget(new_btn)
 
-        self.table = make_table(["Repository", "Model", "Mode", "Date", "Findings"])
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self.card_values = {}
+        for name in ("Scans", "Findings", "Verified"):
+            card = QFrame()
+            card.setObjectName("card")
+            box = QVBoxLayout(card)
+            value = QLabel("0")
+            value.setFont(QFont("Segoe UI", 18, QFont.DemiBold))
+            box.addWidget(value)
+            box.addWidget(QLabel(name))
+            self.card_values[name] = value
+            cards.addWidget(card)
+
+        self.table = make_table(
+            ["Repository", "Model", "Mode", "Date", "Findings", "Tokens", "Duration"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setColumnWidth(1, 150)
         self.table.setColumnWidth(2, 90)
-        self.table.setColumnWidth(3, 150)
-        self.table.setColumnWidth(4, 100)
+        self.table.setColumnWidth(3, 130)
+        self.table.setColumnWidth(4, 90)
+        self.table.setColumnWidth(5, 80)
+        self.table.setColumnWidth(6, 90)
         self.table.cellClicked.connect(lambda row, _col: self.record_selected.emit(row))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
         layout.addLayout(top)
+        layout.addLayout(cards)
         layout.addWidget(self.table, 1)
 
     def refresh(self, records):
+        findings = [f for rec in records for f in rec.findings]
+        counts = (len(records), len(findings), sum(f.status == "Verified" for f in findings))
+        for label, count in zip(self.card_values.values(), counts):
+            label.setText(str(count))
         self.table.setRowCount(len(records))
         for row, rec in enumerate(records):
-            values = [rec.repo, rec.model, rec.mode, rec.date, str(len(rec.findings))]
+            values = [rec.repo, rec.model, rec.mode, rec.date, str(len(rec.findings)),
+                      "n/a", "n/a"]
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
@@ -136,11 +161,12 @@ class ScanPage(QWidget):
         top.addWidget(self.scan_btn)
 
         # Findings table
-        self.table = make_table(["ID", "Severity", "Finding", "Status"])
+        self.table = make_table(["ID", "Severity", "Finding", "Location", "Status"])
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.setColumnWidth(0, 110)
         self.table.setColumnWidth(1, 100)
-        self.table.setColumnWidth(3, 120)
+        self.table.setColumnWidth(3, 240)
+        self.table.setColumnWidth(4, 120)
         self.table.itemSelectionChanged.connect(self._update_buttons)
 
         # Actions
@@ -229,7 +255,7 @@ class ScanPage(QWidget):
     def _fill_table(self, findings):
         self.table.setRowCount(len(findings))
         for row, f in enumerate(findings):
-            for col, value in enumerate([f.id, f.severity, f.title, f.status]):
+            for col, value in enumerate([f.id, f.severity, f.title, f.location, f.status]):
                 self.table.setItem(row, col, QTableWidgetItem(value))
         if findings:
             self.table.selectRow(0)

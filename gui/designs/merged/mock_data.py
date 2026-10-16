@@ -7,6 +7,7 @@ class Finding:
     id: str
     severity: str
     title: str
+    location: str
     status: str
 
 
@@ -22,17 +23,16 @@ class ScanRecord:
 
 # MOCK DATA
 SAMPLE_FINDINGS = [
-    Finding("VULN-001", "High", "Hardcoded API key", "Open"),
-    Finding("VULN-002", "High", "Admin password is admin", "PR open"),
-    Finding("VULN-003", "Medium", "Debug mode left on in production", "Merged"),
-    Finding("VULN-004", "Low", "Mock Mock Mock", "Verified"),
+    Finding("VULN-001", "High", "Hardcoded API key", "src/config/settings.py:12", "Open"),
+    Finding("VULN-002", "High", "Admin password is admin", "src/auth/login.py:58", "PR open"),
+    Finding("VULN-003", "Medium", "Debug mode left on in production", "src/server/app.py:31", "Merged"),
+    Finding("VULN-004", "Low", "Mock Mock Mock", "src/utils/mock.py:7", "Verified"),
 ]
 
 SAMPLE_OUTPUT = [
     "# sample output, not a real scan",
-    "$ /vulnhunt",
     "recon: mapping entry points",
     "hunt: tracing inputs to sinks",
-    "verify: disproving candidates",
+    "disprove: testing candidates against counterexamples",
     "report: writing results",
 ]
