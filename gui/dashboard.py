@@ -53,7 +53,7 @@ QPlainTextEdit { background-color: #020617; border: 1px solid #334155; border-ra
 class VulnHunterDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VulnHunter — Security Operations Dashboard")
+        self.setWindowTitle("VulnHunter")
         self.resize(1100, 750)
 
         central_widget = QWidget()
