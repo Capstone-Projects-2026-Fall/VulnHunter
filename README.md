@@ -1,3 +1,23 @@
+# CIS PROJECT README
+
+# Quick Rundown
+**VulnGUI** Is a working user interface made to connect with the Vulnhunter Security tool. 
+For an explanation of Vulnhunter, scroll down to the **Vulnhunter** Section below. 
+
+The GUI contains mock data currently, and will eventually be populated by Vulnhunter Scan outputs, the end goal being a completed user interface so that vulnhunter can run in the background, and commands can be turned into simple button presses. 
+
+# Vulnhunter Tool Testing (For Those who want to test) 
+### Follow the Usage Guide Below
+## NOTE: 
+If you have a claude sub, and decide to test the tool, please send footage and or results to tyler.sutowski@temple.edu 
+
+# The GUI (For those who just want the release) 
+
+### Download & Extract
+(zipped binary here) 
+
+
+
 # VulnHunter
 
 > **From pattern-matching to provability.**
