@@ -13,8 +13,8 @@ If you have a claude sub, and decide to test the tool, please send footage and o
 
 # The GUI (For those who just want the release) 
 
-### Download & Extract
-(zipped binary here) 
+### Go to Releases Page
+Grab most recent release and download + extract the package.
 
 
 
