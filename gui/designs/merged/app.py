@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from mock_data import SAMPLE_FINDINGS, SAMPLE_OUTPUT, ScanRecord
+from mock_data import SAMPLE_FINDINGS, SAMPLE_OUTPUT, SEVERITY_ORDER, ScanRecord
 
 
 STYLE = """
@@ -65,6 +65,40 @@ def make_table(headers):
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return table
+
+
+class SeverityTracker(QFrame):
+    """Side panel with one count per severity tier; the top two tiers are the headline rows."""
+    HEADLINE_TIERS = 2
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        self.setFixedWidth(200)
+        box = QVBoxLayout(self)
+        heading = QLabel("Severity")
+        heading.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        box.addWidget(heading)
+        self.counts = {}
+        for i, name in enumerate(SEVERITY_ORDER):
+            headline = i < self.HEADLINE_TIERS
+            label = QLabel(name)
+            count = QLabel("0")
+            for w in (label, count):
+                w.setFont(QFont("Segoe UI", 18 if headline else 11, QFont.DemiBold if headline else QFont.Normal))
+            if headline:
+                count.setStyleSheet("color: #38BDF8;")
+            row = QHBoxLayout()
+            row.addWidget(label)
+            row.addStretch()
+            row.addWidget(count)
+            box.addLayout(row)
+            self.counts[name] = count
+        box.addStretch()
+
+    def update_counts(self, findings):
+        for name, label in self.counts.items():
+            label.setText(str(sum(f.severity == name for f in findings)))
 
 
 class HistoryPage(QWidget):
@@ -168,6 +202,11 @@ class ScanPage(QWidget):
         self.table.setColumnWidth(3, 240)
         self.table.setColumnWidth(4, 120)
         self.table.itemSelectionChanged.connect(self._update_buttons)
+        self.tracker = SeverityTracker()
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        body.addWidget(self.table, 1)
+        body.addWidget(self.tracker)
 
         # Actions
         self.fix_btn = QPushButton("Fix")
@@ -190,7 +229,7 @@ class ScanPage(QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
         layout.addLayout(top)
-        layout.addWidget(self.table, 2)
+        layout.addLayout(body, 2)
         layout.addLayout(actions)
         layout.addWidget(self.output, 1)
 
@@ -203,7 +242,7 @@ class ScanPage(QWidget):
         self._set_inputs_editable(True)
         self.repo.clear()
         self.demo.setChecked(True)
-        self.table.setRowCount(0)
+        self._fill_table([])
         self.output.clear()
         self._update_buttons()
 
@@ -227,7 +266,7 @@ class ScanPage(QWidget):
         if not self.demo.isChecked():
             self.output.setPlainText("Live scan is not implemented yet.")
             return
-        self.table.setRowCount(0)
+        self._fill_table([])
         self.output.clear()
         self.scan_btn.setEnabled(False)
         self._line_index = 0
@@ -253,6 +292,8 @@ class ScanPage(QWidget):
         self.finished.emit(record)
 
     def _fill_table(self, findings):
+        self.tracker.update_counts(findings)
+        findings = sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity))
         self.table.setRowCount(len(findings))
         for row, f in enumerate(findings):
             for col, value in enumerate([f.id, f.severity, f.title, f.location, f.status]):
@@ -275,7 +316,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VulnHunter")
-        self.resize(960, 620)
+        self.resize(1180, 620)
         self.history = []  # newest first; held in memory only
 
         self.history_page = HistoryPage()
