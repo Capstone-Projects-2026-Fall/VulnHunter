@@ -10,7 +10,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from mock_data import SAMPLE_FINDINGS, SAMPLE_OUTPUT, SEVERITY_ORDER, ScanRecord
+from mock_data import (
+    DISABLED_MODELS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_DURATION, SCAN_TOKENS, SEED_HISTORY,
+    SEVERITY_ORDER, ScanRecord,
+)
 
 
 STYLE = """
@@ -158,7 +161,7 @@ class HistoryPage(QWidget):
         self.table.setRowCount(len(records))
         for row, rec in enumerate(records):
             values = [rec.repo, rec.model, rec.mode, rec.date, str(len(rec.findings)),
-                      "n/a", "n/a"]
+                      rec.tokens, rec.duration]
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
@@ -171,6 +174,7 @@ class ScanPage(QWidget):
         self.sample_findings = sample_findings
         self.sample_output = sample_output
         self._line_index = 0
+        self._run_output = []
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._next_line)
 
@@ -178,8 +182,8 @@ class ScanPage(QWidget):
         self.repo = QLineEdit()
         self.repo.setPlaceholderText("GitHub URL or local path")
         self.model_box = QComboBox()
-        self.model_box.addItems(["Claude Opus", "OpenAI", "Gemini"])
-        for i in (1, 2):
+        self.model_box.addItems(list(MODEL_IDS) + DISABLED_MODELS)
+        for i in range(len(MODEL_IDS), self.model_box.count()):
             self.model_box.model().item(i).setEnabled(False)
         self.demo = QCheckBox("Demo")
         self.demo.setChecked(True)
@@ -270,11 +274,16 @@ class ScanPage(QWidget):
         self.output.clear()
         self.scan_btn.setEnabled(False)
         self._line_index = 0
+        self._run_output = self._output_for_model()
         self.timer.start(500)
 
+    def _output_for_model(self):
+        model = self.model_box.currentText()
+        return [line.replace("{model_id}", MODEL_IDS.get(model, model)) for line in self.sample_output]
+
     def _next_line(self):
-        if self._line_index < len(self.sample_output):
-            self.output.appendPlainText(self.sample_output[self._line_index])
+        if self._line_index < len(self._run_output):
+            self.output.appendPlainText(self._run_output[self._line_index])
             self._line_index += 1
             return
         self.timer.stop()
@@ -282,12 +291,14 @@ class ScanPage(QWidget):
         self.scan_btn.setEnabled(True)
         now = datetime.now()
         record = ScanRecord(
-            repo=self.repo.text().strip() or "(none)",
+            repo=self.repo.text().strip() or REPO_URL,
             model=self.model_box.currentText(),
             mode="Demo",
             date=f"{now:%b} {now.day}, {now.year}",
             findings=list(self.sample_findings),
-            output=list(self.sample_output),
+            output=list(self._run_output),
+            tokens=SCAN_TOKENS,
+            duration=SCAN_DURATION,
         )
         self.finished.emit(record)
 
@@ -317,7 +328,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("VulnHunter")
         self.resize(1180, 620)
-        self.history = []  # newest first; held in memory only
+        self.history = list(SEED_HISTORY)  # newest first; held in memory only
 
         self.history_page = HistoryPage()
         self.scan_page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
@@ -351,6 +362,7 @@ class MainWindow(QMainWindow):
         self.history_page.new_scan.connect(self.new_scan)
         self.history_page.record_selected.connect(self.open_record)
         self.scan_page.finished.connect(self.add_record)
+        self.history_page.refresh(self.history)
 
     def show_history(self):
         self.stack.setCurrentIndex(self.HISTORY)
