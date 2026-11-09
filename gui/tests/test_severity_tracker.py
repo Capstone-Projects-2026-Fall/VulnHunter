@@ -2,7 +2,7 @@
 
 Run the test with the following command:
 
-    python -m pytest test_severity_tracker.py -v
+    python -m pytest gui/tests/test_severity_tracker.py -v   (from the repo root)
 
 On a headless Linux machine, run with ``QT_QPA_PLATFORM=offscreen``.
 On Windows, no extra setup is needed. No live scan, network, or Claude account is involved: these tests use mock findings only."""
@@ -10,7 +10,7 @@ On Windows, no extra setup is needed. No live scan, network, or Claude account i
 import pytest
 from PyQt5.QtWidgets import QApplication
 
-from main_gui import ScanPage, SeverityTracker
+from gui.main_gui import ScanPage, SeverityTracker
 from gui.data.mock_data import SEVERITY_ORDER, Finding
 
 

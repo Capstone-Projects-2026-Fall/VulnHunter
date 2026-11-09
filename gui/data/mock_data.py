@@ -128,6 +128,23 @@ def scan_output(model_label):
 SCAN_TOKENS = "1.75M"
 SCAN_DURATION = "19 min"
 
+# A finding counts as closed once its fix is merged or verified.
+CLOSED_STATUSES = ("Merged", "Verified")
+
+
+def open_finding_count(findings):
+    """Number of findings that are not yet merged or verified."""
+    return sum(f.status not in CLOSED_STATUSES for f in findings)
+
+
+# SAMPLE DATA (invented): open findings per week for the sample repo, for the Stats
+# burndown. Only the last point is computed, from SAMPLE_FINDINGS, so the chart
+# ends where the findings table does. Not real scan results.
+BURNDOWN_SAMPLE = [
+    ("Week 1", 7), ("Week 2", 7), ("Week 3", 6), ("Week 4", 6), ("Week 5", 5),
+    ("Week 6", open_finding_count(SAMPLE_FINDINGS)),
+]
+
 # Scans already in the history table when the app opens (newest first).
 # Only the first row is the real run (Claude Opus); the others are invented.
 SEED_HISTORY = [

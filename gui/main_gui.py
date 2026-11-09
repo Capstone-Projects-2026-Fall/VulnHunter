@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
@@ -17,8 +17,8 @@ from PyQt5.QtWidgets import (
 )
 
 from gui.data.mock_data import (
-    DISABLED_MODELS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT,
-    SCAN_DURATION, SCAN_TOKENS, SEED_HISTORY, SEVERITY_ORDER, ScanRecord,
+    BURNDOWN_SAMPLE, DISABLED_MODELS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT,
+    SEED_HISTORY, SEVERITY_ORDER, ScanRecord, open_finding_count,
 )
 from llm_connector.conn_all_llm import LLMConnector
 
@@ -162,17 +162,102 @@ class HomePage(QWidget):
         layout.addStretch()
 
 
+class BurndownChart(QWidget):
+    """Open findings over time, drawn with QPainter (no chart library needed)."""
+    LINE, IDEAL, GRID, TEXT = "#38BDF8", "#7F93AD", "#243B5C", "#E6EEF8"
+
+    def __init__(self, points):
+        super().__init__()
+        self.points = list(points)  # [(label, open_count), ...]
+        self.setMinimumHeight(300)
+
+    def paintEvent(self, _event):
+        if not self.points:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setFont(QFont("Segoe UI", 10))
+        left, right, top, bottom = 56, 28, 72, 48
+        plot = QRectF(left, top, self.width() - left - right, self.height() - top - bottom)
+        highest = max(max(v for _, v in self.points), 1)
+        step = max(1, -(-highest // 6))  # at most about six gridlines
+        peak = step * -(-highest // step)  # axis top: next multiple of the step, so it gets a gridline
+
+        def point(i, value):
+            n = len(self.points)
+            x = plot.left() + (plot.width() * i / (n - 1) if n > 1 else plot.width() / 2)
+            return QPointF(x, plot.bottom() - plot.height() * value / peak)
+
+        for tick in range(0, peak + 1, step):
+            y = plot.bottom() - plot.height() * tick / peak
+            p.setPen(QPen(QColor(self.GRID), 1))
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            p.setPen(QColor(self.TEXT))
+            p.drawText(QRectF(0, y - 12, left - 10, 24), Qt.AlignRight | Qt.AlignVCenter, str(tick))
+
+        last = len(self.points) - 1
+        p.setPen(QPen(QColor(self.IDEAL), 2, Qt.DashLine))
+        p.drawLine(point(0, self.points[0][1]), point(last, 0))
+
+        p.setPen(QPen(QColor(self.LINE), 3))
+        for i in range(last):
+            p.drawLine(point(i, self.points[i][1]), point(i + 1, self.points[i + 1][1]))
+        p.setBrush(QColor(self.LINE))
+        for i, (label, value) in enumerate(self.points):
+            pos = point(i, value)
+            p.setPen(QPen(QColor(self.LINE), 1))
+            p.drawEllipse(pos, 5, 5)
+            p.setPen(QColor(self.TEXT))
+            p.drawText(QRectF(pos.x() - 40, plot.bottom() + 8, 80, 24), Qt.AlignCenter, label)
+            p.drawText(QRectF(pos.x() - 20, pos.y() - 30, 40, 20), Qt.AlignCenter, str(value))
+
+        # Legend
+        p.setPen(QPen(QColor(self.LINE), 3))
+        p.drawLine(QPointF(left, 16), QPointF(left + 28, 16))
+        p.setPen(QColor(self.TEXT))
+        p.drawText(QRectF(left + 36, 4, 160, 24), Qt.AlignLeft | Qt.AlignVCenter, "Open findings")
+        p.setPen(QPen(QColor(self.IDEAL), 2, Qt.DashLine))
+        p.drawLine(QPointF(left + 200, 16), QPointF(left + 228, 16))
+        p.setPen(QColor(self.TEXT))
+        p.drawText(QRectF(left + 236, 4, 200, 24), Qt.AlignLeft | Qt.AlignVCenter, "Ideal burndown")
+
+
 class StatsPage(QWidget):
     def __init__(self):
         super().__init__()
         title = QLabel("Vulnerabilities Burndown")
-        title.setFont(QFont("Segoe UI", 32, QFont.DemiBold))
+        title.setStyleSheet("font-size: 32px; font-weight: 600;")  # a stylesheet size beats setFont
         title.setAlignment(Qt.AlignCenter)
+        note = QLabel("Sample data for the sample repository, not real scan results")
+        note.setAlignment(Qt.AlignCenter)
+        note.setStyleSheet("color: #7F93AD;")
+
+        total = len(SAMPLE_FINDINGS)
+        still_open = open_finding_count(SAMPLE_FINDINGS)
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self.card_values = {}
+        for name, value in (("Open", still_open), ("Closed", total - still_open), ("Total", total)):
+            card = QFrame()
+            card.setObjectName("card")
+            box = QVBoxLayout(card)
+            label = QLabel(str(value))
+            label.setFont(QFont("Segoe UI", 18, QFont.DemiBold))
+            box.addWidget(label)
+            box.addWidget(QLabel(name))
+            self.card_values[name] = label
+            cards.addWidget(card)
+
+        self.chart = BurndownChart(BURNDOWN_SAMPLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
         layout.addWidget(title)
-        layout.addStretch()
+        layout.addWidget(note)
+        layout.addLayout(cards)
+        layout.addWidget(self.chart, 1)
+
 
 class HistoryPage(QWidget):
     new_scan = pyqtSignal()
@@ -395,8 +480,8 @@ class ScanPage(QWidget):
             date=f"{now:%b} {now.day}, {now.year}",
             findings=list(self.sample_findings),
             output=list(self._run_output),
-            tokens=SCAN_TOKENS,
-            duration=SCAN_DURATION,
+            tokens="n/a",  # a demo replay measures nothing, so show no usage figures
+            duration="n/a",
         )
         self.finished.emit(record)
 

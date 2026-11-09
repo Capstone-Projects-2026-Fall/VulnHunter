@@ -25,17 +25,16 @@ cd VulnHunter
 python -m venv .venv
 source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r gui/requirements.txt
-python gui/designs/merged/app.py
+python gui/main_gui.py
 ```
 
-Leave the **Demo** box checked and press **Scan**. Live scans are not implemented yet.
+Leave the **Demo** box checked and press **Scan**. Live scans are not implemented yet, so do not uncheck Demo.
 
-To run the GUI tests (sample data only):
+To run the GUI tests (sample data only), from the repo root:
 
 ```bash
 pip install -r gui/requirements-dev.txt
-cd gui/designs/merged
-python -m pytest -v          # on a headless Linux machine: QT_QPA_PLATFORM=offscreen python -m pytest -v
+python -m pytest gui/tests -q      # on a headless Linux machine: QT_QPA_PLATFORM=offscreen python -m pytest gui/tests -q
 ```
 
 The sections below this one describe the upstream VulnHunter tool, which does require Claude Opus access.

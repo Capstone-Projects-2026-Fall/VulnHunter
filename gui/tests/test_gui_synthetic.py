@@ -1,8 +1,8 @@
 """GUI tests on synthetic data: happy path, empty states, edge cases.
 
-Run from this folder:
+Run from the repo root:
 
-    python -m pytest test_gui_synthetic.py -v
+    python -m pytest gui/tests/test_gui_synthetic.py -v   (from the repo root)
 
 On a headless Linux machine, run with ``QT_QPA_PLATFORM=offscreen``.
 No live scan, network, or Claude account is involved. These tests check that the
@@ -12,9 +12,9 @@ mock GUI behaves as designed; they do not test real VulnHunter output.
 import pytest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-import app as gui
-from app import HistoryPage, MainWindow, ScanPage
-from mock_data import (
+from gui import main_gui as gui
+from gui.main_gui import HistoryPage, MainWindow, ScanPage
+from gui.data.mock_data import (
     DISABLED_MODELS, MODEL_IDS, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SEED_HISTORY,
     SEVERITY_ORDER, Finding,
 )
@@ -143,12 +143,23 @@ def test_blank_repo_in_demo_mode_still_scans(qapp):
 
 # Not-implemented paths
 
-def test_live_scan_is_not_implemented(qapp):
+def test_unchecking_demo_takes_live_route_and_shows_errors(qapp, monkeypatch):
+    # The live route calls LLMConnector. Stub it so no real request is ever made.
+    calls = []
+
+    class FakeConnector:
+        def __init__(self, model_name):
+            calls.append(model_name)
+            raise RuntimeError("stubbed: no network in tests")
+
+    monkeypatch.setattr(gui, "LLMConnector", FakeConnector)
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     page.demo.setChecked(False)
     page.start_scan()
-    assert "not implemented" in page.output.toPlainText().lower()
-    assert page.table.rowCount() == 0
+
+    assert calls == ["Claude Opus"]
+    assert "stubbed: no network in tests" in page.output.toPlainText()
+    assert page.table.rowCount() == 0  # no findings are produced on the live route yet
     assert not page.timer.isActive()
 
 
@@ -229,3 +240,40 @@ def test_main_window_defines_show_stats_once():
     import inspect
     source = inspect.getsource(gui.MainWindow)
     assert source.count("def show_stats") == 1
+
+
+# Demo usage figures and the Stats burndown
+
+def test_demo_scan_shows_no_usage_figures(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    records = []
+    page.finished.connect(records.append)
+    run_demo_scan(page)
+    assert (records[0].tokens, records[0].duration) == ("n/a", "n/a")
+
+
+def test_burndown_sample_ends_at_open_findings_and_never_rises(qapp):
+    from gui.data.mock_data import BURNDOWN_SAMPLE, open_finding_count
+    values = [v for _, v in BURNDOWN_SAMPLE]
+    assert values[-1] == open_finding_count(SAMPLE_FINDINGS)
+    assert values == sorted(values, reverse=True)
+
+
+def test_stats_page_cards_match_sample_findings_and_chart_paints(qapp):
+    from gui.data.mock_data import open_finding_count
+    window = MainWindow()
+    window.show_stats()
+    stats = window.stats_page
+    open_now = open_finding_count(SAMPLE_FINDINGS)
+    assert stats.card_values["Open"].text() == str(open_now)
+    assert stats.card_values["Total"].text() == str(len(SAMPLE_FINDINGS))
+    assert int(stats.card_values["Closed"].text()) + open_now == len(SAMPLE_FINDINGS)
+    stats.chart.resize(900, 400)
+    assert not stats.chart.grab().isNull()
+
+
+def test_burndown_chart_handles_edge_data(qapp):
+    for points in ([], [("Week 1", 0)], [("Week 1", 3)], [("A", 40), ("B", 0)]):
+        chart = gui.BurndownChart(points)
+        chart.resize(600, 300)
+        assert not chart.grab().isNull()

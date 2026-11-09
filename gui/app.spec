@@ -2,8 +2,8 @@
 
 
 a = Analysis(
-    ['app.py'],
-    pathex=[],
+    ['main_gui.py'],
+    pathex=['..'],  # repo root, so gui.* and llm_connector.* import
     binaries=[],
     datas=[],
     hiddenimports=[],
