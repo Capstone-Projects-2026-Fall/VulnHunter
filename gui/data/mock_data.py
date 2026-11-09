@@ -20,6 +20,9 @@ class Finding:
     status: str
     cwe: str = ""
     issue: int = 0  # GitHub issue number in the scanned repo, 0 if none
+    decision: str = ""  # "Accepted" or "Ignored" once a reviewer has decided (mock only)
+    reason: str = ""
+    note: str = ""
 
     @property
     def issue_url(self):
@@ -128,22 +131,90 @@ def scan_output(model_label):
 SCAN_TOKENS = "1.75M"
 SCAN_DURATION = "19 min"
 
-# A finding counts as closed once its fix is merged or verified.
-CLOSED_STATUSES = ("Merged", "Verified")
+# Mocked Fix / Accept / Ignore. Nothing here touches a repository.
+# Sample fix summaries by weakness type, echoing the fix strategies in SAMPLE_OUTPUT.
+SAMPLE_FIXES = {
+    "CWE-78": "Pass the command and its arguments as a list instead of building a shell string, "
+              "and add a test that a hostile value is not executed.",
+    "CWE-22": "Resolve the path and check it against an allow-list of directories before "
+              "creating or opening anything.",
+    "CWE-400": "Set a maximum request body size and reject larger requests.",
+    "CWE-494": "Download over HTTPS and check the file against a known SHA-256 checksum.",
+    "CWE-798": "Move the key out of the source into an environment variable or secret store, "
+               "and rotate it.",
+}
+DEFAULT_SAMPLE_FIX = "Review the flagged line and apply the recommended remediation."
+
+ACCEPT_REASONS = ["Fix looks correct", "Tests cover the change", "Low risk change", "Other"]
+IGNORE_REASONS = ["False positive", "Accepted risk", "Not reachable in production",
+                  "Duplicate", "Will not fix", "Other"]
+
+# SAMPLE CODE (invented for the demo, not from any real repository). Each entry is
+# (first line number, lines); the flagged line is the one in the finding's location.
+SAMPLE_SNIPPETS = {
+    "VULN-003": (76, ["def download_clip(url, label):",
+                      "    out = f\"clips/{label}.mp4\"",
+                      "    os.system(f\"yt-dlp -o {out} {url}\")",
+                      "    return out",
+                      ""]),
+    "VULN-005": (15, ["out_path = f\"trimmed/{label}.mp4\"",
+                      "",
+                      "subprocess.run(f\"ffmpeg -i {url} -t 30 {out_path}\", shell=True)",
+                      "",
+                      "print(\"done\")"]),
+    "VULN-006": (15, ["out_path = f\"trimmed/{label}.mp4\"",
+                      "",
+                      "subprocess.run(f\"ffmpeg -i {url} -t 30 {out_path}\", shell=True)",
+                      "",
+                      "print(\"done\")"]),
+    "VULN-002": (145, ["@app.route(\"/infer\", methods=[\"POST\"])",
+                       "def infer():",
+                       "    data = request.get_data()  # no maximum size",
+                       "    return run_model(data)",
+                       ""]),
+    "VULN-004": (67, ["def prepare_dir(label):",
+                      "    base = \"clips\"",
+                      "    os.makedirs(os.path.join(base, label), exist_ok=True)",
+                      "    return base",
+                      ""]),
+    "VULN-007": (13, ["def trim(url, label):",
+                      "    base = \"trimmed\"",
+                      "    out_path = os.path.join(base, label + \".mp4\")",
+                      "    return out_path",
+                      ""]),
+    "VULN-008": (217, ["def fetch(name):",
+                       "    url = DATASET_URLS[name]",
+                       "    urllib.request.urlretrieve(\"http://\" + url, name)  # plain HTTP, no checksum",
+                       "    return name",
+                       ""]),
+    "VULN-001": (10, ["# settings",
+                      "DEBUG = False",
+                      "API_KEY = \"example-not-a-real-key\"",
+                      "TIMEOUT = 30",
+                      ""]),
+}
 
 
-def open_finding_count(findings):
-    """Number of findings that are not yet merged or verified."""
-    return sum(f.status not in CLOSED_STATUSES for f in findings)
+def split_location(location):
+    """'path/to/file.py:78' -> ('path/to/file.py', 78); a location without a line gives 0."""
+    path, _, line = location.rpartition(":")
+    return (path, int(line)) if path and line.isdigit() else (location, 0)
 
 
-# SAMPLE DATA (invented): open findings per week for the sample repo, for the Stats
-# burndown. Only the last point is computed, from SAMPLE_FINDINGS, so the chart
-# ends where the findings table does. Not real scan results.
-BURNDOWN_SAMPLE = [
-    ("Week 1", 7), ("Week 2", 7), ("Week 3", 6), ("Week 4", 6), ("Week 5", 5),
-    ("Week 6", open_finding_count(SAMPLE_FINDINGS)),
-]
+def code_url(finding):
+    """Sample link to the flagged line. The sample repository does not exist."""
+    path, line = split_location(finding.location)
+    return f"{REPO_URL}/blob/main/{path}" + (f"#L{line}" if line else "")
+
+
+def sample_fix(finding):
+    return SAMPLE_FIXES.get(finding.cwe, DEFAULT_SAMPLE_FIX)
+
+
+def sample_snippet(finding):
+    """[(line number, text), ...] around the flagged line, or [] if there is none."""
+    start, lines = SAMPLE_SNIPPETS.get(finding.id, (0, []))
+    return [(start + i, text) for i, text in enumerate(lines)]
 
 # Scans already in the history table when the app opens (newest first).
 # Only the first row is the real run (Claude Opus); the others are invented.
