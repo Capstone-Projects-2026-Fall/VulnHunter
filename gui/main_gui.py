@@ -1,4 +1,5 @@
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -10,15 +11,16 @@ if str(ROOT) not in sys.path:
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QPlainTextEdit, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from gui.data.mock_data import (
-    DISABLED_MODELS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT,
-    SCAN_DURATION, SCAN_TOKENS, SEED_HISTORY, SEVERITY_ORDER, ScanRecord,
+    ACCEPT_REASONS, DISABLED_MODELS, IGNORE_REASONS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS,
+    SAMPLE_OUTPUT, SEED_HISTORY, SEVERITY_ORDER, ScanRecord, code_url, sample_fix,
+    sample_snippet, split_location,
 )
 from llm_connector.conn_all_llm import LLMConnector
 
@@ -36,6 +38,14 @@ QPushButton#home {
     font-weight: 600; padding: 0 12px;
 }
 QLabel#title { font-size: 24px; font-weight: 600; }
+QWidget#homePage QLabel#homeTitle { font-size: 60px; font-weight: 600; }
+QWidget#homePage QLabel#homeSubtitle { font-size: 28px; color: #9FB3CC; }
+QWidget#homePage QPushButton { font-size: 26px; padding: 16px 44px; }
+QLabel#muted { color: #7F93AD; }
+QPushButton#link {
+    background: transparent; border: 0; padding: 0; color: #38BDF8; text-decoration: underline;
+}
+QPushButton#link:hover { color: #7DD3FC; }
 QCheckBox { background: transparent; }
 QLineEdit, QComboBox {
     background: #111E33; border: 1px solid #243B5C; border-radius: 5px; padding: 8px 10px;
@@ -129,12 +139,14 @@ class HomePage(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("homePage")  # sizes for this page are set in STYLE
 
         title = QLabel("VulnHunter")
-        title.setFont(QFont("Segoe UI", 32, QFont.DemiBold))
+        title.setObjectName("homeTitle")
         title.setAlignment(Qt.AlignCenter)
 
         subtitle = QLabel("Welcome to VulnGUI.")
+        subtitle.setObjectName("homeSubtitle")
         subtitle.setAlignment(Qt.AlignCenter)
 
         open_btn = QPushButton("Dashboard")
@@ -147,6 +159,7 @@ class HomePage(QWidget):
 
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(20)
         button_row.addStretch()
         button_row.addWidget(open_btn)
         button_row.addWidget(open_btn_2)
@@ -173,6 +186,7 @@ class StatsPage(QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.addWidget(title)
         layout.addStretch()
+
 
 class HistoryPage(QWidget):
     new_scan = pyqtSignal()
@@ -236,6 +250,87 @@ class HistoryPage(QWidget):
                 self.table.setItem(row, col, QTableWidgetItem(value))
 
 
+def apply_decision(finding, decision, reason, note):
+    """Record a reviewer's Accept/Ignore decision on a finding. Mocked: nothing leaves the app."""
+    finding.decision = decision
+    finding.reason = reason
+    finding.note = note.strip()
+    finding.status = decision
+
+
+class DecisionDialog(QDialog):
+    """Mock accept/ignore form: pick a reason and add context. Nothing is changed in any repository."""
+
+    def __init__(self, parent, finding, kind):
+        super().__init__(parent)
+        self.finding = finding
+        self.kind = kind  # "Accept" or "Ignore"
+        self.decision = "Accepted" if kind == "Accept" else "Ignored"
+        self.setWindowTitle(f"{kind} fix for {finding.id}")
+        self.setMinimumWidth(680)
+
+        context = QLabel(
+            f"{finding.id}  |  {finding.severity}  |  {finding.cwe or 'no CWE'}\n"
+            f"{finding.title}\n{finding.location}\n\n"
+            f"Proposed fix (sample): {sample_fix(finding)}")
+        context.setWordWrap(True)
+        self.reason = QComboBox()
+        self.reason.addItems(ACCEPT_REASONS if kind == "Accept" else IGNORE_REASONS)
+        self.note = QPlainTextEdit()
+        self.note.setPlaceholderText("Context for the team: why are you making this decision? (optional)")
+        self.note.setFixedHeight(110)
+        mocked = QLabel("Mocked: nothing is changed in any repository.")
+        mocked.setObjectName("muted")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText(f"{kind} fix")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(context)
+        layout.addWidget(QLabel("Reason"))
+        layout.addWidget(self.reason)
+        layout.addWidget(QLabel("Context"))
+        layout.addWidget(self.note)
+        layout.addWidget(mocked)
+        layout.addWidget(buttons)
+
+
+class CodeViewDialog(QDialog):
+    """Mock code viewer: an invented snippet around the flagged line. Not from a real repository."""
+
+    def __init__(self, parent, finding):
+        super().__init__(parent)
+        _path, line = split_location(finding.location)
+        self.setWindowTitle(f"{finding.id}: {finding.location}")
+        self.setMinimumSize(820, 420)
+
+        header = QLabel(f"{finding.title}\n{finding.location}")
+        header.setWordWrap(True)
+        link = QLabel(code_url(finding))
+        link.setObjectName("muted")
+        link.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.code = QPlainTextEdit()
+        self.code.setReadOnly(True)
+        self.code.setFont(QFont("Consolas", 11))
+        rows = sample_snippet(finding)
+        self.code.setPlainText(
+            "\n".join(f"{'>' if n == line else ' '} {n:>4} | {text}" for n, text in rows)
+            if rows else "No sample snippet for this finding.")
+        note = QLabel("Sample snippet, invented for the demo. The link above is a sample and is not opened.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(header)
+        layout.addWidget(link)
+        layout.addWidget(self.code, 1)
+        layout.addWidget(note)
+
+
 class ScanPage(QWidget):
     finished = pyqtSignal(object)  # emits a ScanRecord
 
@@ -245,6 +340,7 @@ class ScanPage(QWidget):
         self.sample_output = sample_output
         self._line_index = 0
         self._run_output = []
+        self._rows = []  # findings in table order
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._next_line)
 
@@ -279,27 +375,64 @@ class ScanPage(QWidget):
         self.table.setColumnWidth(1, 105)
         self.table.setColumnWidth(3, 290)
         self.table.setColumnWidth(4, 125)
-        self.table.itemSelectionChanged.connect(self._update_buttons)
+        self.table.itemSelectionChanged.connect(self._refresh_detail)
         self.tracker = SeverityTracker()
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(self.table, 1)
         body.addWidget(self.tracker)
 
-        # Actions
+        # Selected finding: details and actions. Fix, Accept, Ignore and View in code are
+        # mocked: they work on sample data only and never touch a repository.
+        self.detail = QFrame()
+        self.detail.setObjectName("card")
+        self.detail_heading = QLabel()
+        self.detail_heading.setStyleSheet("font-weight: 600;")
+        self.detail_title = QLabel()
+        self.detail_title.setWordWrap(True)
+        self.code_link = QPushButton()  # styled as a link in STYLE
+        self.code_link.setObjectName("link")
+        self.code_link.setCursor(Qt.PointingHandCursor)
+        self.code_link.setToolTip("Show the flagged code (sample snippet).")
+        self.code_link.clicked.connect(self._view_code)
+        self.decision_label = QLabel()
+        self.decision_label.setObjectName("muted")
+        self.decision_label.setWordWrap(True)
+
         self.fix_btn = QPushButton("Fix")
         self.fix_btn.setObjectName("primary")
+        self.accept_btn = QPushButton("Accept")
+        self.ignore_btn = QPushButton("Ignore")
         self.verify_btn = QPushButton("Verify")
         self.report_btn = QPushButton("Report")
-        self.fix_btn.setToolTip("Fix: propose a remediation for the selected finding (not implemented yet).")
-        self.verify_btn.setToolTip("Verify: check that the selected finding is actually fixed (not implemented yet).")
-        self.report_btn.setToolTip("Report: export the selected finding (not implemented yet).")
+        self.fix_btn.setToolTip("Fix: propose a remediation for this finding (mocked, shows a sample proposal).")
+        self.accept_btn.setToolTip("Accept the proposed fix, with a reason and context (mocked).")
+        self.ignore_btn.setToolTip("Ignore this finding or fix, with a reason and context (mocked).")
+        self.verify_btn.setToolTip("Verify: check that this finding is actually fixed (not implemented yet).")
+        self.report_btn.setToolTip("Report: export this finding (not implemented yet).")
+        self.fix_btn.clicked.connect(self._propose_fix)
+        self.accept_btn.clicked.connect(lambda: self._decide("Accept"))
+        self.ignore_btn.clicked.connect(lambda: self._decide("Ignore"))
+        for btn in (self.verify_btn, self.report_btn):
+            btn.clicked.connect(lambda _checked, b=btn: self._not_implemented(b.text()))
+
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(self.detail_heading)
+        heading_row.addStretch()
+        heading_row.addWidget(self.code_link)
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        for btn in (self.fix_btn, self.verify_btn, self.report_btn):
-            btn.clicked.connect(lambda _checked, b=btn: self._not_implemented(b.text()))
+        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn):
             actions.addWidget(btn)
         actions.addStretch()
+        for btn in (self.verify_btn, self.report_btn):
+            actions.addWidget(btn)
+        detail_box = QVBoxLayout(self.detail)
+        detail_box.setSpacing(6)
+        detail_box.addLayout(heading_row)
+        detail_box.addWidget(self.detail_title)
+        detail_box.addWidget(self.decision_label)
+        detail_box.addLayout(actions)
 
         # Output
         self.output = QPlainTextEdit()
@@ -311,10 +444,10 @@ class ScanPage(QWidget):
         layout.setSpacing(16)
         layout.addLayout(top)
         layout.addLayout(body, 2)
-        layout.addLayout(actions)
+        layout.addWidget(self.detail)
         layout.addWidget(self.output, 1)
 
-        self._update_buttons()
+        self._refresh_detail()
 
     # Page states
     def reset(self):
@@ -325,7 +458,7 @@ class ScanPage(QWidget):
         self.demo.setChecked(True)
         self._fill_table([])
         self.output.clear()
-        self._update_buttons()
+        self._refresh_detail()
 
     def show_record(self, record):
         """Read-only view of a past scan."""
@@ -385,7 +518,9 @@ class ScanPage(QWidget):
             self._line_index += 1
             return
         self.timer.stop()
-        self._fill_table(self.sample_findings)
+        # Copies, so a decision on one scan never changes the sample data or other scans.
+        findings = [replace(f) for f in self.sample_findings]
+        self._fill_table(findings)
         self.scan_btn.setEnabled(True)
         now = datetime.now()
         record = ScanRecord(
@@ -393,10 +528,10 @@ class ScanPage(QWidget):
             model=self.model_box.currentText(),
             mode="Demo",
             date=f"{now:%b} {now.day}, {now.year}",
-            findings=list(self.sample_findings),
+            findings=findings,
             output=list(self._run_output),
-            tokens=SCAN_TOKENS,
-            duration=SCAN_DURATION,
+            tokens="n/a",  # a demo replay measures nothing, so show no usage figures
+            duration="n/a",
         )
         self.finished.emit(record)
 
@@ -405,6 +540,7 @@ class ScanPage(QWidget):
         # A severity outside SEVERITY_ORDER sorts last instead of raising.
         findings = sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity)
                           if f.severity in SEVERITY_ORDER else len(SEVERITY_ORDER))
+        self._rows = findings
         self.table.setRowCount(len(findings))
         for row, f in enumerate(findings):
             for col, value in enumerate([f.id, f.severity, f.title, f.location, f.status]):
@@ -412,10 +548,74 @@ class ScanPage(QWidget):
         if findings:
             self.table.selectRow(0)
 
-    def _update_buttons(self):
-        has_selection = bool(self.table.selectionModel().selectedRows())
-        for btn in (self.fix_btn, self.verify_btn, self.report_btn):
-            btn.setEnabled(has_selection)
+    def _current_finding(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows or rows[0].row() >= len(self._rows):
+            return None
+        return self._rows[rows[0].row()]
+
+    def _refresh_detail(self):
+        """Show the selected finding's details and enable its actions."""
+        finding = self._current_finding()
+        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn):
+            btn.setEnabled(finding is not None)
+        if finding is None:
+            self.detail_heading.setText("No finding selected")
+            self.detail_title.setText("Select a finding to see its details and actions.")
+            self.code_link.setText("")
+            self.code_link.hide()
+            self.decision_label.hide()
+            return
+        self.detail_heading.setText(
+            f"{finding.id}  |  {finding.severity}  |  {finding.cwe or 'no CWE'}  |  {finding.status}")
+        self.detail_title.setText(finding.title)
+        self.code_link.setText(f"View in code: {finding.location}")
+        self.code_link.show()
+        if finding.decision:
+            text = f"{finding.decision}: {finding.reason}"
+            if finding.note:
+                text += f". Context: {finding.note}"
+            self.decision_label.setText(text)
+            self.decision_label.show()
+        else:
+            self.decision_label.hide()
+
+    def _refresh_status(self):
+        """Put the selected finding's status back into its table row, then refresh the details."""
+        rows = self.table.selectionModel().selectedRows()
+        finding = self._current_finding()
+        if finding is not None:
+            self.table.item(rows[0].row(), 4).setText(finding.status)
+        self._refresh_detail()
+
+    # Mocked actions on the selected finding
+    def _propose_fix(self):
+        finding = self._current_finding()
+        if finding is None:
+            return
+        if not finding.decision:
+            finding.status = "Fix proposed"
+        self._refresh_status()
+        QMessageBox.information(
+            self, "VulnHunter",
+            f"Sample fix proposal for {finding.id}:\n\n{sample_fix(finding)}\n\n"
+            "Mocked: a real Fix would create a branch, write tests and open a pull request. "
+            "Nothing was changed.")
+
+    def _decide(self, kind):
+        finding = self._current_finding()
+        if finding is None:
+            return
+        dialog = DecisionDialog(self, finding, kind)
+        if dialog.exec_() == QDialog.Accepted:
+            apply_decision(finding, dialog.decision, dialog.reason.currentText(),
+                           dialog.note.toPlainText())
+            self._refresh_status()
+
+    def _view_code(self):
+        finding = self._current_finding()
+        if finding is not None:
+            CodeViewDialog(self, finding).exec_()
 
     def _not_implemented(self, name):
         QMessageBox.information(self, "VulnHunter", f"{name} is not implemented yet.")
@@ -430,7 +630,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(*MIN_WINDOW_SIZE)
         screen = QApplication.primaryScreen().availableGeometry()
         self.resize(*default_window_size(screen.width(), screen.height()))
-        self.history = list(SEED_HISTORY)  # newest first; held in memory only
+        # Newest first; held in memory only. Copies, so decisions never change the sample data.
+        self.history = [replace(r, findings=[replace(f) for f in r.findings]) for r in SEED_HISTORY]
 
         self.home_page = HomePage()
         self.history_page = HistoryPage()
