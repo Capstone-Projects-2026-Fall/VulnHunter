@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QSizePolicy
 )
 
 from gui.data.mock_data import (
@@ -23,7 +23,6 @@ from gui.data.mock_data import (
     sample_snippet, split_location,
 )
 from llm_connector.conn_all_llm import LLMConnector
-
 from gui.api_conn_page import ApiConnectorPage
 
 STYLE = """
@@ -132,48 +131,192 @@ class SeverityTracker(QFrame):
         for name, label in self.counts.items():
             label.setText(str(sum(f.severity == name for f in findings)))
 
+HOME_QSS = """
+#homePage {
+    background: #0a1424;
+    font-family: "Segoe UI Variable Display", "Segoe UI", "Inter", sans-serif;
+}
+#homePage QLabel { background: transparent; }
+
+#homeEyebrow { font-size: 12px; font-weight: 700; letter-spacing: 3px; color: #38bdf8; }
+#homeHeading { font-size: 38px; font-weight: 700; color: #f1f6fd; }
+#homeSub     { font-size: 15px; color: #9fb4d0; }
+#homeFooter  { font-size: 12px; color: #4d6585; }
+
+/* status pill */
+#statusPill {
+    font-size: 12px; font-weight: 700;
+    padding: 7px 14px; border-radius: 14px;
+    background: #0d2646; border: 1px solid #16365f; color: #9fb4d0;
+}
+#statusPill[state="ok"]  { color: #4ade80; border-color: #1f5f3f; background: rgba(74,222,128,0.08); }
+#statusPill[state="off"] { color: #fbbf24; border-color: #5f4a1f; background: rgba(251,191,36,0.08); }
+
+/* module cards */
+#moduleCard {
+    background: #0d2646; border: 1px solid #16365f;
+    border-radius: 14px; text-align: left;
+}
+#moduleCard:hover   { background: #123560; border: 1px solid #38bdf8; }
+#moduleCard:pressed { background: #0a1f3a; }
+#homePage QLabel#cardIcon {
+    font-family: "Segoe UI Symbol", "Segoe UI";
+    font-size: 24px; color: #38bdf8;
+    background: rgba(56,189,248,0.12); border-radius: 12px;
+}
+#cardTitle { font-size: 22px; font-weight: 700; color: #f1f6fd; }
+#cardDesc  { font-size: 14px; color: #9fb4d0; }
+#cardGo    { font-size: 14px; font-weight: 700; color: #38bdf8; }
+
+/* getting started panel */
+#panel { background: #0d2646; border: 1px solid #16365f; border-radius: 12px; }
+#panelTitle { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: #7b93b3; }
+#homePage QLabel#stepBadge {
+    font-size: 12px; font-weight: 700; color: #0a1424;
+    background: #38bdf8; border-radius: 12px;
+}
+#stepText { font-size: 14px; color: #dbe6f5; }
+"""
+
+
+class ModuleCard(QPushButton):
+    """A large clickable module card."""
+
+    def __init__(self, icon: str, title: str, description: str):
+        super().__init__()
+        self.setObjectName("moduleCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        ic = QLabel(icon)
+        ic.setObjectName("cardIcon")
+        ic.setFixedSize(52, 52)
+        ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        t = QLabel(title)
+        t.setObjectName("cardTitle")
+        d = QLabel(description)
+        d.setObjectName("cardDesc")
+        d.setWordWrap(True)
+        go = QLabel("Open  →")
+        go.setObjectName("cardGo")
+
+        for w in (ic, t, d, go):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(26, 24, 26, 22)
+        lay.setSpacing(0)
+        lay.addWidget(ic, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addStretch()
+        lay.addWidget(t)
+        lay.addSpacing(8)
+        lay.addWidget(d)
+        lay.addSpacing(16)
+        lay.addWidget(go)
 
 class HomePage(QWidget):
     dashboard_requested = pyqtSignal()
     stats_requested = pyqtSignal()
+    connector_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
-        self.setObjectName("homePage")  # sizes for this page are set in STYLE
+        self.setObjectName("homePage")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(HOME_QSS)
 
-        title = QLabel("VulnHunter")
-        title.setObjectName("homeTitle")
-        title.setAlignment(Qt.AlignCenter)
+        # ---------- header ----------
+        eyebrow = QLabel("OVERVIEW")
+        eyebrow.setObjectName("homeEyebrow")
+        heading = QLabel("Welcome back")
+        heading.setObjectName("homeHeading")
+        sub = QLabel("Review findings, track stats, or connect a data source.")
+        sub.setObjectName("homeSub")
 
-        subtitle = QLabel("Welcome to VulnGUI.")
-        subtitle.setObjectName("homeSubtitle")
-        subtitle.setAlignment(Qt.AlignCenter)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        titles.addWidget(eyebrow)
+        titles.addSpacing(8)
+        titles.addWidget(heading)
+        titles.addSpacing(6)
+        titles.addWidget(sub)
 
-        open_btn = QPushButton("Dashboard")
-        open_btn.setObjectName("primary")
-        open_btn.clicked.connect(self.dashboard_requested.emit)
+        self.pill = QLabel()
+        self.pill.setObjectName("statusPill")
+        self.set_api_status(False)
 
-        open_btn_2 = QPushButton("Stats")
-        open_btn_2.setObjectName("primary")
-        open_btn_2.clicked.connect(self.stats_requested.emit)
+        header = QHBoxLayout()
+        header.addLayout(titles)
+        header.addStretch()
+        header.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
 
+        # ---------- module cards ----------
+        cards = QHBoxLayout()
+        cards.setSpacing(20)
+        for icon, title, desc, signal in [
+            ("▦", "Dashboard", "Review findings and scan activity in one place.", self.dashboard_requested),
+            ("◔", "Stats", "Totals and charts across all of your results.", self.stats_requested),
+            ("⇄", "API Connector", "Configure and test your data source connections.", self.connector_requested),
+        ]:
+            card = ModuleCard(icon, title, desc)
+            card.clicked.connect(signal.emit)
+            cards.addWidget(card, 1)
 
-        button_row = QHBoxLayout()
-        button_row.setSpacing(20)
-        button_row.addStretch()
-        button_row.addWidget(open_btn)
-        button_row.addWidget(open_btn_2)
-        button_row.addStretch()
+        # ---------- getting started (full width, steps in a row) ----------
+        panel = QFrame()
+        panel.setObjectName("panel")
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel_lay = QVBoxLayout(panel)
+        panel_lay.setContentsMargins(24, 18, 24, 20)
+        panel_lay.setSpacing(14)
 
+        panel_title = QLabel("GETTING STARTED")
+        panel_title.setObjectName("panelTitle")
+        panel_lay.addWidget(panel_title)
+
+        steps = QHBoxLayout()
+        steps.setSpacing(32)
+        for n, text in enumerate(
+            ["Connect your API", "Go to dashboard", "Utilize Vulnhunter"], 1
+        ):
+            steps.addLayout(self._step_row(str(n), text), 1)
+        panel_lay.addLayout(steps)
+
+    
+
+        # ---------- assemble ----------
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.addStretch()
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        layout.setContentsMargins(48, 36, 48, 20)
+        layout.setSpacing(0)
+        layout.addLayout(header)
+        layout.addSpacing(32)
+        layout.addLayout(cards, 1)
         layout.addSpacing(24)
-        layout.addLayout(button_row)
-        layout.addStretch()
+        layout.addWidget(panel)
+        layout.addSpacing(14)
 
+    # ---------- helpers ----------
+    def _step_row(self, num: str, text: str) -> QHBoxLayout:
+        badge = QLabel(num)
+        badge.setObjectName("stepBadge")
+        badge.setFixedSize(24, 24)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl = QLabel(text)
+        lbl.setObjectName("stepText")
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(badge)
+        row.addWidget(lbl, 1)
+        return row
+
+    # ---------- public API ----------
+    def set_api_status(self, connected: bool) -> None:
+        self.pill.setText("●  API connected" if connected else "●  API not connected")
+        self.pill.setProperty("state", "ok" if connected else "off")
+        self.pill.style().unpolish(self.pill)
+        self.pill.style().polish(self.pill)
 
 class StatsPage(QWidget):
     def __init__(self):
@@ -622,7 +765,7 @@ class ScanPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    HOME, HISTORY, SCAN, STATS = 0, 1, 2, 3
+    HOME, HISTORY, SCAN, STATS, CONNECT = 0, 1, 2, 3, 4
 
     def __init__(self):
         super().__init__()
@@ -637,12 +780,18 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryPage()
         self.scan_page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
         self.stats_page = StatsPage()
+        self.connector_page = ApiConnectorPage()
+        self.connector_page.connected.connect(self.on_llm_connected)
+        self.connector_page.disconnected.connect(self.on_llm_disconnected)
+        self.connected_provider = None
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.scan_page)
         self.stack.addWidget(self.stats_page)
+        self.stack.addWidget(self.connector_page)
         self.home_page.stats_requested.connect(self.show_stats)
+        self.home_page.connector_requested.connect(self.show_connector)
 
         # Shared header: one home button, centered, visible on every page
         header = QFrame()
@@ -678,6 +827,17 @@ class MainWindow(QMainWindow):
 
     def show_stats(self):
         self.stack.setCurrentIndex(self.STATS)
+
+    def show_connector(self):
+        self.stack.setCurrentIndex(self.CONNECT)
+
+    def on_llm_connected(self, provider_key, provider_label):
+        self.connected_provider = (provider_key, provider_label)
+        print(f"Successfully connected to {provider_label} ({provider_key})")
+
+    def on_llm_disconnected(self):
+        self.connected_provider = None
+        print("LLM disconnected.")
 
     def show_history(self):
         self.stack.setCurrentIndex(self.HISTORY)
