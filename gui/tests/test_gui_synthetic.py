@@ -12,7 +12,9 @@ mock GUI behaves as designed; they do not test real VulnHunter output.
 from dataclasses import replace
 
 import pytest
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QKeyEvent
+from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QMessageBox
 
 from gui import main_gui as gui
 from gui.main_gui import HistoryPage, MainWindow, ScanPage
@@ -102,6 +104,44 @@ def test_empty_history_page(qapp):
     page.refresh([])
     assert page.table.rowCount() == 0
     assert [label.text() for label in page.card_values.values()] == ["0", "0", "0"]
+
+
+def test_history_header_click_toggles_sort_and_right_click_clears(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    selected = []
+    page.record_selected.connect(selected.append)
+    header = page.table.horizontalHeader()
+
+    header.sectionClicked.emit(3)
+    assert table_column(page, 3) == [
+        "Oct 18, 2026", "Oct 20, 2026", "Oct 23, 2026", "Oct 24, 2026"]
+    assert header.sortIndicatorOrder() == Qt.AscendingOrder
+    page.table.cellClicked.emit(0, 0)
+    assert selected == [3]
+
+    header.sectionClicked.emit(3)
+    assert table_column(page, 3) == [
+        "Oct 24, 2026", "Oct 23, 2026", "Oct 20, 2026", "Oct 18, 2026"]
+    assert header.sortIndicatorOrder() == Qt.DescendingOrder
+
+    header.sectionClicked.emit(3)
+    assert table_column(page, 3) == [
+        "Oct 18, 2026", "Oct 20, 2026", "Oct 23, 2026", "Oct 24, 2026"]
+    assert header.sortIndicatorOrder() == Qt.AscendingOrder
+
+    header.customContextMenuRequested.emit(QPoint(0, 0))
+    assert table_column(page, 3) == [record.date for record in SEED_HISTORY]
+    assert not header.isSortIndicatorShown()
+
+
+def test_history_numeric_columns_sort_by_value(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+
+    page.sort_by_column(4)
+
+    assert table_column(page, 4) == ["0", "1", "7", "7"]
 
 
 def test_scan_with_zero_findings(qapp):
@@ -206,12 +246,59 @@ def test_model_dropdown_selection_can_change(qapp):
 def test_home_navigation(qapp):
     window = MainWindow()
     assert window.stack.currentIndex() == window.HOME
+    assert not window.back_button.isEnabled()
+    assert not window.forward_button.isEnabled()
+
+    window.home_page.connector_requested.emit()
+    assert window.stack.currentIndex() == window.CONNECT
+    window.go_back()
+    assert window.stack.currentIndex() == window.HOME
+
     window.home_page.dashboard_requested.emit()
     assert window.stack.currentIndex() == window.HISTORY
     window.show_stats()
     assert window.stack.currentIndex() == window.STATS
+
+    window.go_back()
+    assert window.stack.currentIndex() == window.HISTORY
+    assert window.back_button.isEnabled()
+    assert window.forward_button.isEnabled()
+    window.go_forward()
+    assert window.stack.currentIndex() == window.STATS
+    assert not window.forward_button.isEnabled()
+
+
+def test_navigation_shortcuts_and_branching_history(qapp):
+    window = MainWindow()
+    window.show_history()
+    window.show_stats()
+
+    back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.ControlModifier)
+    QApplication.sendEvent(window.home_button, back_event)
+    assert window.stack.currentIndex() == window.HISTORY
+
+    command_forward_event = QKeyEvent(
+        QEvent.KeyPress, Qt.Key_Right, Qt.MetaModifier)
+    QApplication.sendEvent(window.home_button, command_forward_event)
+    assert window.stack.currentIndex() == window.STATS
+
+    command_back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.MetaModifier)
+    QApplication.sendEvent(window.home_button, command_back_event)
+    assert window.stack.currentIndex() == window.HISTORY
+
+    forward_event = QKeyEvent(
+        QEvent.KeyPress, Qt.Key_Right, Qt.ControlModifier)
+    QApplication.sendEvent(window.home_button, forward_event)
+    assert window.stack.currentIndex() == window.STATS
+
+    window.go_back()
     window.show_home()
     assert window.stack.currentIndex() == window.HOME
+    assert not window.forward_button.isEnabled()
+    assert window.back_button.text() == "‹"
+    assert window.forward_button.text() == "›"
+    assert window.back_button.objectName() == "backNavigation"
+    assert window.forward_button.objectName() == "forwardNavigation"
 
 
 def test_default_window_size_fits_screen_but_not_below_minimum():
@@ -230,6 +317,129 @@ def test_main_window_uses_minimum_size(qapp):
     assert (window.minimumWidth(), window.minimumHeight()) == gui.MIN_WINDOW_SIZE
     assert window.width() >= gui.MIN_WINDOW_SIZE[0]
     assert window.height() >= gui.MIN_WINDOW_SIZE[1]
+
+
+def test_main_window_zoom_shortcuts_scale_contents_not_window(qapp):
+    window = MainWindow()
+    window.show()
+    qapp.processEvents()
+    initial_size = (window.width(), window.height())
+    initial_column_width = window.scan_page.table.columnWidth(0)
+    history_table = window.history_page.table
+    initial_stylesheet = window.styleSheet()
+    window.reset_zoom()
+    qapp.processEvents()
+    assert window.styleSheet() == initial_stylesheet
+    home_title_font = window.home_button.font()
+    home_title_metrics = (
+        window.home_button.fontMetrics().height(),
+        window.home_button.fontMetrics().horizontalAdvance(window.home_button.text()),
+    )
+    page_title = window.home_page.findChildren(QLabel)[0]
+    font_heights = [
+        (
+            page_title.fontMetrics().height(),
+            window.scan_page.repo.fontMetrics().height(),
+            history_table.fontMetrics().height(),
+        )
+    ]
+
+    window.zoom_in()
+    assert window._zoom == pytest.approx(window.DEFAULT_ZOOM + window.ZOOM_STEP)
+    qapp.processEvents()
+    font_heights.append((
+        page_title.fontMetrics().height(),
+        window.scan_page.repo.fontMetrics().height(),
+        history_table.fontMetrics().height(),
+    ))
+    assert all(new > old for old, new in zip(font_heights[-2], font_heights[-1]))
+    window.reset_zoom()
+    qapp.processEvents()
+    font_heights = [(
+        page_title.fontMetrics().height(),
+        window.scan_page.repo.fontMetrics().height(),
+        history_table.fontMetrics().height(),
+    )]
+
+    for _ in range(2):
+        window.zoom_in()
+        qapp.processEvents()
+        font_heights.append((
+            page_title.fontMetrics().height(),
+            window.scan_page.repo.fontMetrics().height(),
+            history_table.fontMetrics().height(),
+        ))
+    assert all(
+        all(new > old for old, new in zip(previous, current))
+        for previous, current in zip(font_heights, font_heights[1:])
+    )
+
+    max_steps = round((window.MAX_ZOOM - 1.2) / window.ZOOM_STEP)
+    for _ in range(max_steps):
+        window.zoom_in()
+    assert (window.width(), window.height()) == initial_size
+    assert window._zoom == window.MAX_ZOOM
+    assert f"QWidget {{ color: #E6EEF8; font-size: {round(18 * window._zoom)}px; }}" in window.styleSheet()
+    qapp.processEvents()
+    home_button = window.home_button
+    assert "QPushButton#home { font-size: 20px; }" in window.styleSheet()
+    assert home_button.width() >= 260
+    assert home_button.width() > home_button.fontMetrics().horizontalAdvance(home_button.text())
+    assert home_button.height() >= 48
+    assert (
+        home_button.fontMetrics().height(),
+        home_button.fontMetrics().horizontalAdvance(home_button.text()),
+    ) == home_title_metrics
+    assert window.scan_page.table.columnWidth(0) == initial_column_width
+    assert window.scan_page.table.wordWrap()
+    assert f"QTableWidget {{ font-size: {round(18 * window._zoom)}px; }}" in window.styleSheet()
+    assert f"QHeaderView::section {{ font-size: {round(18 * window._zoom)}px; }}" in window.styleSheet()
+    window.scan_page._fill_table(SAMPLE_FINDINGS)
+    assert f"QTableWidget {{ font-size: {round(18 * window._zoom)}px; }}" in window.styleSheet()
+
+    max_zoom_stylesheet = window.styleSheet()
+    max_zoom_table_rule = f"QTableWidget {{ font-size: {round(18 * window._zoom)}px; }}"
+    for _ in range(3):
+        window.zoom_in()
+    assert window.styleSheet() == max_zoom_stylesheet
+    assert max_zoom_table_rule in window.styleSheet()
+
+    min_steps = round((window.MAX_ZOOM - window.MIN_ZOOM) / window.ZOOM_STEP)
+    for _ in range(min_steps):
+        window.zoom_out()
+    assert window._zoom == window.MIN_ZOOM
+    min_zoom_stylesheet = window.styleSheet()
+    for _ in range(3):
+        window.zoom_out()
+    assert window.styleSheet() == min_zoom_stylesheet
+
+    window.reset_zoom()
+    assert window._zoom == window.DEFAULT_ZOOM
+    assert window.styleSheet() == initial_stylesheet
+    assert (window.width(), window.height()) == initial_size
+    assert window.scan_page.table.columnWidth(0) == initial_column_width
+    assert (
+        home_button.fontMetrics().height(),
+        home_button.fontMetrics().horizontalAdvance(home_button.text()),
+    ) == home_title_metrics
+    window.close()
+
+
+def test_zoom_shortcut_accepts_key_repeat(qapp):
+    window = MainWindow()
+    repeated_plus = QKeyEvent(
+        QEvent.KeyPress, Qt.Key_Plus, Qt.ControlModifier, "+", True
+    )
+
+    assert window._handle_zoom_shortcut(repeated_plus)
+    assert window._zoom == window.DEFAULT_ZOOM + window.ZOOM_STEP
+
+    repeated_minus = QKeyEvent(
+        QEvent.KeyPress, Qt.Key_Minus, Qt.MetaModifier, "-", True
+    )
+    assert window._handle_zoom_shortcut(repeated_minus)
+    assert window._zoom == window.DEFAULT_ZOOM
+    window.close()
 
 
 def test_base_font_size_is_larger_than_original():
@@ -257,14 +467,16 @@ def test_demo_scan_shows_no_usage_figures(qapp):
 # Home page text size
 
 def test_home_page_text_is_larger_than_the_base_font():
-    assert "QWidget#homePage QLabel#homeTitle { font-size: 60px" in gui.STYLE
-    assert "QWidget#homePage QPushButton { font-size: 26px" in gui.STYLE
+    assert "#homeHeading { font-size: 38px" in gui.HOME_QSS
+    assert "#cardTitle { font-size: 22px" in gui.HOME_QSS
 
 
 def test_home_page_widgets_use_the_sized_object_names(qapp):
     home = gui.HomePage()
     assert home.objectName() == "homePage"
-    assert {w.objectName() for w in home.findChildren(gui.QLabel)} == {"homeTitle", "homeSubtitle"}
+    assert home.findChild(gui.QLabel, "homeHeading") is not None
+    assert home.findChild(gui.QLabel, "homeSub") is not None
+    assert home.findChild(gui.QLabel, "statusPill") is not None
 
 
 # Per-finding actions: Fix, Accept, Ignore, View in code (all mocked)

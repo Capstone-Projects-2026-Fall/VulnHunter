@@ -1,3 +1,4 @@
+import re
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -8,13 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget, QSizePolicy
+    QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from gui.data.mock_data import (
@@ -32,9 +33,24 @@ QDialog, QMessageBox { background: #111E33; }
 QFrame#header { background: #0F2747; border: 0; border-bottom: 1px solid #1F4E8C; }
 QFrame#card { background: #111E33; border: 1px solid #243B5C; border-radius: 5px; }
 QFrame#card QLabel { background: transparent; }
+QLabel#severityHeading { font-size: 12px; font-weight: 600; }
+QLabel#severityHeadline { font-size: 18px; font-weight: 600; }
+QLabel#severityDetail { font-size: 11px; }
+QLabel#homeTitle, QLabel#statsTitle { font-size: 32px; font-weight: 600; }
+QLabel#cardValue { font-size: 18px; font-weight: 600; }
 QPushButton#home {
     background: transparent; border: 0; color: #E6EEF8; font-size: 20px;
     font-weight: 600; padding: 0 12px;
+}
+QPushButton#backNavigation, QPushButton#forwardNavigation {
+    background: transparent; border: 0; color: #E6EEF8;
+    font-size: 34px; padding: 0; min-width: 32px; max-width: 32px;
+}
+QPushButton#backNavigation:hover, QPushButton#forwardNavigation:hover {
+    color: #38BDF8;
+}
+QPushButton#backNavigation:disabled, QPushButton#forwardNavigation:disabled {
+    color: #52647B; background: transparent;
 }
 QLabel#title { font-size: 24px; font-weight: 600; }
 QWidget#homePage QLabel#homeTitle { font-size: 60px; font-weight: 600; }
@@ -67,7 +83,10 @@ QTableWidget {
     selection-background-color: #1B4B7A; selection-color: #E6EEF8;
 }
 QHeaderView::section { background: #172A47; border: 0; padding: 9px 12px; font-weight: 600; }
-QPlainTextEdit { background: #08101D; border: 1px solid #243B5C; color: #E6EEF8; }
+QPlainTextEdit {
+    background: #08101D; border: 1px solid #243B5C; color: #E6EEF8;
+    font-family: Consolas; font-size: 10px;
+}
 QScrollBar:vertical { background: #111E33; width: 12px; margin: 0; }
 QScrollBar::handle:vertical { background: #243B5C; border-radius: 5px; min-height: 24px; }
 QScrollBar:horizontal { background: #111E33; height: 12px; margin: 0; }
@@ -87,10 +106,29 @@ def default_window_size(screen_width, screen_height):
     return max(width, MIN_WINDOW_SIZE[0]), max(height, MIN_WINDOW_SIZE[1])
 
 
+def scaled_stylesheet(stylesheet, scale):
+    return re.sub(
+        r"(?<![\w.-])(\d+(?:\.\d+)?)px\b",
+        lambda match: f"{round(float(match.group(1)) * scale)}px",
+        stylesheet,
+    )
+
+
+def zoom_stylesheet(scale):
+    stylesheet = scaled_stylesheet(STYLE, scale)
+    return (
+        f"{stylesheet}\n"
+        "QPushButton#home { font-size: 20px; }\n"
+        f"QTableWidget {{ font-size: {round(18 * scale)}px; }}\n"
+        f"QHeaderView::section {{ font-size: {round(18 * scale)}px; }}"
+    )
+
+
 def make_table(headers):
     table = QTableWidget(0, len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.verticalHeader().setVisible(False)
+    table.setWordWrap(True)
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -108,15 +146,15 @@ class SeverityTracker(QFrame):
         self.setFixedWidth(200)
         box = QVBoxLayout(self)
         heading = QLabel("Severity")
-        heading.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+        heading.setObjectName("severityHeading")
         box.addWidget(heading)
         self.counts = {}
         for i, name in enumerate(SEVERITY_ORDER):
             headline = i < self.HEADLINE_TIERS
             label = QLabel(name)
             count = QLabel("0")
-            for w in (label, count):
-                w.setFont(QFont("Segoe UI", 18 if headline else 11, QFont.DemiBold if headline else QFont.Normal))
+            label.setObjectName("severityHeadline" if headline else "severityDetail")
+            count.setObjectName("severityHeadline" if headline else "severityDetail")
             if headline:
                 count.setStyleSheet("color: #38BDF8;")
             row = QHBoxLayout()
@@ -322,7 +360,7 @@ class StatsPage(QWidget):
     def __init__(self):
         super().__init__()
         title = QLabel("Vulnerabilities Burndown")
-        title.setFont(QFont("Segoe UI", 32, QFont.DemiBold))
+        title.setObjectName("statsTitle")
         title.setAlignment(Qt.AlignCenter)
 
         layout = QVBoxLayout(self)
@@ -356,7 +394,7 @@ class HistoryPage(QWidget):
             card.setObjectName("card")
             box = QVBoxLayout(card)
             value = QLabel("0")
-            value.setFont(QFont("Segoe UI", 18, QFont.DemiBold))
+            value.setObjectName("cardValue")
             box.addWidget(value)
             box.addWidget(QLabel(name))
             self.card_values[name] = value
@@ -371,7 +409,16 @@ class HistoryPage(QWidget):
         self.table.setColumnWidth(4, 115)
         self.table.setColumnWidth(5, 100)
         self.table.setColumnWidth(6, 115)
-        self.table.cellClicked.connect(lambda row, _col: self.record_selected.emit(row))
+        self._records = []
+        self._sort_column = None
+        self._sort_order = Qt.AscendingOrder
+        header = self.table.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(False)
+        header.sectionClicked.connect(self._toggle_sort)
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._clear_sort)
+        self.table.cellClicked.connect(self._select_record)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -381,16 +428,84 @@ class HistoryPage(QWidget):
         layout.addWidget(self.table, 1)
 
     def refresh(self, records):
-        findings = [f for rec in records for f in rec.findings]
-        counts = (len(records), len(findings), sum(f.status == "Verified" for f in findings))
+        self._records = list(records)
+        findings = [f for rec in self._records for f in rec.findings]
+        counts = (len(self._records), len(findings),
+                  sum(f.status == "Verified" for f in findings))
         for label, count in zip(self.card_values.values(), counts):
             label.setText(str(count))
-        self.table.setRowCount(len(records))
-        for row, rec in enumerate(records):
+
+        indexed_records = list(enumerate(self._records))
+        if self._sort_column is not None:
+            indexed_records.sort(
+                key=lambda entry: self._sort_key(entry[1], self._sort_column),
+                reverse=self._sort_order == Qt.DescendingOrder,
+            )
+
+        self.table.setRowCount(len(indexed_records))
+        for row, (record_index, rec) in enumerate(indexed_records):
             values = [rec.repo, rec.model, rec.mode, rec.date, str(len(rec.findings)),
                       rec.tokens, rec.duration]
             for col, value in enumerate(values):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(str(value))
+                if col == 0:
+                    item.setData(Qt.UserRole, record_index)
+                self.table.setItem(row, col, item)
+        self.table.resizeRowsToContents()
+        if self._sort_column is not None:
+            self.table.horizontalHeader().setSortIndicator(
+                self._sort_column, self._sort_order)
+
+    def _toggle_sort(self, column):
+        if self._sort_column != column:
+            order = Qt.AscendingOrder
+        elif self._sort_order == Qt.AscendingOrder:
+            order = Qt.DescendingOrder
+        else:
+            order = Qt.AscendingOrder
+        self.sort_by_column(column, order)
+
+    def _clear_sort(self, _position=None):
+        self._sort_column = None
+        self.table.horizontalHeader().setSortIndicatorShown(False)
+        self.refresh(self._records)
+
+    def sort_by_column(self, column, order=Qt.AscendingOrder):
+        self._sort_column = column
+        self._sort_order = order
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.refresh(self._records)
+
+    def _select_record(self, row, _column):
+        item = self.table.item(row, 0)
+        if item is not None:
+            self.record_selected.emit(item.data(Qt.UserRole))
+
+    @staticmethod
+    def _sort_key(record, column):
+        values = [record.repo, record.model, record.mode, record.date,
+                  len(record.findings), record.tokens, record.duration]
+        value = values[column]
+        if column == 3:
+            try:
+                return (0, datetime.strptime(value, "%b %d, %Y"))
+            except ValueError:
+                return (1, value.casefold())
+        if column == 4:
+            return (0, value)
+        if column in (5, 6):
+            number = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(mins|min|hrs|hr|h|secs|sec|s|[kmb])?\b",
+                              value, re.IGNORECASE)
+            if number:
+                amount = float(number.group(1))
+                unit = (number.group(2) or "").lower()
+                multiplier = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000,
+                              "h": 60, "hr": 60, "hrs": 60,
+                              "min": 1, "mins": 1, "s": 1 / 60,
+                              "sec": 1 / 60, "secs": 1 / 60}.get(unit, 1)
+                return (0, amount * multiplier)
+            return (1, value.casefold())
+        return (0, value.casefold())
 
 
 def apply_decision(finding, decision, reason, note):
@@ -580,7 +695,6 @@ class ScanPage(QWidget):
         # Output
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
-        self.output.setFont(QFont("Consolas", 10))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -688,6 +802,7 @@ class ScanPage(QWidget):
         for row, f in enumerate(findings):
             for col, value in enumerate([f.id, f.severity, f.title, f.location, f.status]):
                 self.table.setItem(row, col, QTableWidgetItem(value))
+        self.table.resizeRowsToContents()
         if findings:
             self.table.selectRow(0)
 
@@ -766,11 +881,19 @@ class ScanPage(QWidget):
 
 class MainWindow(QMainWindow):
     HOME, HISTORY, SCAN, STATS, CONNECT = 0, 1, 2, 3, 4
+    MIN_ZOOM = 0.7
+    MAX_ZOOM = 2.0
+    DEFAULT_ZOOM = 1.0
+    ZOOM_STEP = 0.1
 
     def __init__(self):
         super().__init__()
+        self._zoom = self.DEFAULT_ZOOM
         self.setWindowTitle("VulnHunter")
         self.setMinimumSize(*MIN_WINDOW_SIZE)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
         screen = QApplication.primaryScreen().availableGeometry()
         self.resize(*default_window_size(screen.width(), screen.height()))
         # Newest first; held in memory only. Copies, so decisions never change the sample data.
@@ -790,22 +913,46 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.scan_page)
         self.stack.addWidget(self.stats_page)
         self.stack.addWidget(self.connector_page)
+        self._page_history = [self.HOME]
+        self._page_history_position = 0
         self.home_page.stats_requested.connect(self.show_stats)
         self.home_page.connector_requested.connect(self.show_connector)
 
-        # Shared header: one home button, centered, visible on every page
+        # Shared header: navigation controls and a centered home button.
         header = QFrame()
         header.setObjectName("header")
-        header.setFixedHeight(56)
+        header.setFixedHeight(72)
+        self.back_button = QPushButton("‹")
+        self.back_button.setObjectName("backNavigation")
+        self.back_button.setToolTip("Go to the previous page (Ctrl/Cmd+Left)")
+        self.back_button.clicked.connect(self.go_back)
+        self.forward_button = QPushButton("›")
+        self.forward_button.setObjectName("forwardNavigation")
+        self.forward_button.setToolTip("Go to the next page (Ctrl/Cmd+Right)")
+        self.forward_button.clicked.connect(self.go_forward)
+        navigation = QWidget()
+        navigation_layout = QHBoxLayout(navigation)
+        navigation_layout.setContentsMargins(0, 0, 0, 0)
+        navigation_layout.setSpacing(8)
+        navigation_layout.addWidget(self.back_button)
+        navigation_layout.addWidget(self.forward_button)
+
         home = QPushButton("VulnHunter")
         home.setObjectName("home")
+        home.setMinimumSize(260, 48)
         home.setCursor(Qt.PointingHandCursor)
         home.clicked.connect(self.show_home)
+        self.home_button = home
+        right_spacer = QWidget()
+        right_spacer.setFixedWidth(navigation.sizeHint().width())
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 0, 24, 0)
+        header_layout.addWidget(navigation)
         header_layout.addStretch()
         header_layout.addWidget(home)
         header_layout.addStretch()
+        header_layout.addWidget(right_spacer)
+        self._update_navigation_buttons()
 
         root = QWidget()
         root.setObjectName("root")
@@ -821,15 +968,16 @@ class MainWindow(QMainWindow):
         self.history_page.record_selected.connect(self.open_record)
         self.scan_page.finished.connect(self.add_record)
         self.history_page.refresh(self.history)
+        self._apply_zoom(self.DEFAULT_ZOOM)
 
     def show_home(self):
-        self.stack.setCurrentIndex(self.HOME)
+        self._navigate_to(self.HOME)
 
     def show_stats(self):
-        self.stack.setCurrentIndex(self.STATS)
+        self._navigate_to(self.STATS)
 
     def show_connector(self):
-        self.stack.setCurrentIndex(self.CONNECT)
+        self._navigate_to(self.CONNECT)
 
     def on_llm_connected(self, provider_key, provider_label):
         self.connected_provider = (provider_key, provider_label)
@@ -840,24 +988,126 @@ class MainWindow(QMainWindow):
         print("LLM disconnected.")
 
     def show_history(self):
-        self.stack.setCurrentIndex(self.HISTORY)
+        self._navigate_to(self.HISTORY)
 
     def new_scan(self):
         self.scan_page.reset()
-        self.stack.setCurrentIndex(self.SCAN)
+        self._navigate_to(self.SCAN)
 
     def open_record(self, row):
         self.scan_page.show_record(self.history[row])
-        self.stack.setCurrentIndex(self.SCAN)
+        self._navigate_to(self.SCAN)
+
+    def _navigate_to(self, page_index):
+        if self.stack.currentIndex() == page_index:
+            return
+        del self._page_history[self._page_history_position + 1:]
+        self._page_history.append(page_index)
+        self._page_history_position += 1
+        self.stack.setCurrentIndex(page_index)
+        self._update_navigation_buttons()
+
+    def go_back(self):
+        if self._page_history_position == 0:
+            return
+        self._page_history_position -= 1
+        self.stack.setCurrentIndex(self._page_history[self._page_history_position])
+        self._update_navigation_buttons()
+
+    def go_forward(self):
+        if self._page_history_position >= len(self._page_history) - 1:
+            return
+        self._page_history_position += 1
+        self.stack.setCurrentIndex(self._page_history[self._page_history_position])
+        self._update_navigation_buttons()
+
+    def _update_navigation_buttons(self):
+        self.back_button.setEnabled(self._page_history_position > 0)
+        self.forward_button.setEnabled(
+            self._page_history_position < len(self._page_history) - 1)
 
     def add_record(self, record):
         self.history.insert(0, record)
         self.history_page.refresh(self.history)
 
+    def _clamp_zoom(self, zoom):
+        bounded_zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, zoom))
+        return round(bounded_zoom, 2)
+
+    def _apply_zoom(self, target_zoom):
+        self._zoom = self._clamp_zoom(target_zoom)
+        stylesheet = zoom_stylesheet(self._zoom)
+        if self.styleSheet() != stylesheet:
+            self.setStyleSheet(stylesheet)
+        self.home_page.setStyleSheet(scaled_stylesheet(HOME_QSS, self._zoom))
+        for table in self.findChildren(QTableWidget):
+            table.resizeRowsToContents()
+
+    def zoom_in(self):
+        target_zoom = self._clamp_zoom(self._zoom + self.ZOOM_STEP)
+        if target_zoom > self._zoom:
+            self._apply_zoom(target_zoom)
+
+    def zoom_out(self):
+        target_zoom = self._clamp_zoom(self._zoom - self.ZOOM_STEP)
+        if target_zoom < self._zoom:
+            self._apply_zoom(target_zoom)
+
+    def reset_zoom(self):
+        self._apply_zoom(self.DEFAULT_ZOOM)
+
+    def _handle_zoom_shortcut(self, event):
+        modifiers = event.modifiers()
+        is_zoom_modifier = bool(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+        if not is_zoom_modifier:
+            return False
+
+        if event.key() in (Qt.Key_Plus, Qt.Key_Equal):
+            self.zoom_in()
+            event.accept()
+            return True
+        if event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
+            self.zoom_out()
+            event.accept()
+            return True
+        if event.key() == Qt.Key_0:
+            self.reset_zoom()
+            event.accept()
+            return True
+        return False
+
+    def _handle_navigation_shortcut(self, event):
+        modifiers = event.modifiers()
+        if not modifiers & (Qt.ControlModifier | Qt.MetaModifier):
+            return False
+        if modifiers & Qt.ShiftModifier:
+            return False
+        if event.key() == Qt.Key_Left:
+            self.go_back()
+        elif event.key() == Qt.Key_Right:
+            self.go_forward()
+        else:
+            return False
+        event.accept()
+        return True
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress and self._handle_navigation_shortcut(event):
+            return True
+        if event.type() == QEvent.KeyPress and self._handle_zoom_shortcut(event):
+            return True
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        if self._handle_navigation_shortcut(event):
+            return
+        if self._handle_zoom_shortcut(event):
+            return
+        super().keyPressEvent(event)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLE)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
