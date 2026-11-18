@@ -861,9 +861,11 @@ class StatusPill(QLabel):
 
 
 class RadarSpinner(QWidget):
-    """A radar sweep that circles while a scan runs."""
-    # (x, y as fractions of the radius, dot size at the default 96px)
-    DOTS = ((-0.42, -0.32, 6), (0.32, 0.24, 5), (-0.34, 0.56, 8))
+    """A green sonar scope: a sweeping arm with a fading trail, and blips that light up as it passes."""
+    SWEEP_STEP = 3.0  # degrees per frame at 25ms, so one turn takes 3 seconds
+    GREEN, BLIP, RING, TICK, FACE = "#4ADE80", "#86EFAC", "#1F5A45", "#2E7D5B", "#08181A"
+    # (x, y as fractions of the radius, blip radius at the 76px base radius)
+    BLIPS = ((0.576, -0.508, 5), (0.370, 0.318, 4), (-0.518, -0.091, 5))
 
     def __init__(self, size=96):
         super().__init__()
@@ -885,55 +887,74 @@ class RadarSpinner(QWidget):
         super().hideEvent(event)
 
     def _tick(self):
-        self._angle = (self._angle - 4.0) % 360.0  # clockwise
+        self._angle = (self._angle - self.SWEEP_STEP) % 360.0  # clockwise
         self.update()
+
+    @staticmethod
+    def blip_alpha(behind_degrees):
+        """Opacity of a blip that the sweep passed `behind_degrees` ago: full, fading to dim."""
+        fraction = (behind_degrees % 360) / 360
+        if fraction >= 0.55:
+            return int(255 * 0.12)
+        return int(255 * (1 - (fraction / 0.55) * 0.88))
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         radius = min(self.width(), self.height()) / 2 - 3
-        scale = radius / 45.0  # everything below was drawn for a 96px spinner
+        u = radius / 76.0  # everything below is drawn for a 76px radius
         centre = QPointF(self.width() / 2, self.height() / 2)
         disc = QPainterPath()
         disc.addEllipse(centre, radius, radius)
-        p.fillPath(disc, QColor("#16294A"))
+        p.fillPath(disc, QColor(self.FACE))
 
-        p.setPen(QPen(QColor("#3B5575"), max(2.0, 1.4 * scale)))
         p.setBrush(Qt.NoBrush)
-        for fraction in (1.0, 0.66, 0.33):
+        p.setPen(QPen(QColor(self.RING), max(1.5, 1.5 * u)))
+        for fraction in (0.737, 0.474, 0.21):
             p.drawEllipse(centre, radius * fraction, radius * fraction)
-        p.drawLine(QPointF(centre.x(), centre.y() - radius), QPointF(centre.x(), centre.y() + radius))
-        p.drawLine(QPointF(centre.x() - radius, centre.y()), QPointF(centre.x() + radius, centre.y()))
+        p.setPen(QPen(QColor(self.RING), max(2.0, 2.5 * u)))
+        p.drawEllipse(centre, radius, radius)
+
+        # Tick marks around the rim: the four compass points and the diagonals.
+        p.setPen(QPen(QColor(self.TICK), max(1.5, 2 * u), Qt.SolidLine, Qt.RoundCap))
+        for degrees in range(0, 360, 45):
+            direction = math.radians(degrees)
+            length = (8 if degrees % 90 == 0 else 5) * u
+            outer = radius - 4 * u
+            p.drawLine(
+                QPointF(centre.x() + outer * math.cos(direction), centre.y() - outer * math.sin(direction)),
+                QPointF(centre.x() + (outer - length) * math.cos(direction),
+                        centre.y() - (outer - length) * math.sin(direction)))
 
         # The fading trail behind the sweep arm.
         p.save()
         p.setClipPath(disc)
         trail = QConicalGradient(centre, self._angle)
-        trail.setColorAt(0.0, QColor(150, 205, 230, 170))
-        trail.setColorAt(0.22, QColor(110, 160, 190, 0))
-        trail.setColorAt(1.0, QColor(110, 160, 190, 0))
+        trail.setColorAt(0.0, QColor(74, 222, 128, 95))
+        trail.setColorAt(0.22, QColor(74, 222, 128, 0))
+        trail.setColorAt(1.0, QColor(74, 222, 128, 0))
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(trail))
         p.drawEllipse(centre, radius, radius)
         p.restore()
 
-        # Dots light up as the arm passes over them, then fade.
-        for dx, dy, size in self.DOTS:
-            dot_angle = math.degrees(math.atan2(-dy, dx)) % 360
-            behind = (dot_angle - self._angle) % 360
-            alpha = max(70, int(255 * (1 - behind / 360)))
+        # Blips light up as the arm passes over them, then fade until the next pass.
+        for dx, dy, size in self.BLIPS:
+            blip_angle = math.degrees(math.atan2(-dy, dx)) % 360
+            behind = (blip_angle - self._angle) % 360
+            colour = QColor(self.BLIP)
+            colour.setAlpha(self.blip_alpha(behind))
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(200, 85, 61, alpha))
-            p.drawEllipse(QPointF(centre.x() + dx * radius, centre.y() + dy * radius),
-                          size * scale / 2, size * scale / 2)
+            p.setBrush(colour)
+            p.drawEllipse(QPointF(centre.x() + dx * radius, centre.y() + dy * radius), size * u, size * u)
 
         angle = math.radians(self._angle)
         tip = QPointF(centre.x() + radius * math.cos(angle), centre.y() - radius * math.sin(angle))
-        p.setPen(QPen(QColor("#A9D1E0"), 4 * scale, Qt.SolidLine, Qt.RoundCap))
+        p.setPen(QPen(QColor(self.GREEN), max(2.0, 3 * u), Qt.SolidLine, Qt.RoundCap))
         p.drawLine(centre, tip)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#A9D1E0"))
-        p.drawEllipse(centre, 5 * scale, 5 * scale)
+        p.setBrush(QColor(self.GREEN))
+        p.drawEllipse(centre, 4 * u, 4 * u)
 
 
 class DimOverlay(QWidget):

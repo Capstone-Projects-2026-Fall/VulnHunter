@@ -1209,3 +1209,46 @@ def test_help_button_reopens_getting_started_even_when_it_was_turned_off(qapp, t
     assert not gui.reminder_hidden(settings)
     assert window.maybe_show_reminder() is not None
     window.reminder.close()
+
+
+# Green sonar scope
+
+def test_sonar_scope_is_green_not_red(qapp):
+    spinner = gui.RadarSpinner(size=170)
+    spinner._angle = 300.0
+    image = spinner.grab().toImage()
+    green = red = 0
+    for x in range(0, image.width(), 2):
+        for y in range(0, image.height(), 2):
+            c = image.pixelColor(x, y)
+            if c.alpha() < 200:
+                continue
+            if c.green() > c.red() + 60 and c.green() > c.blue() + 20:
+                green += 1
+            if c.red() > c.green() + 60 and c.red() > c.blue() + 60:
+                red += 1
+    assert green > 40  # the arm, trail and blips
+    assert red == 0  # the old red dots are gone
+
+
+def test_blips_light_up_when_swept_then_fade(qapp):
+    alpha = gui.RadarSpinner.blip_alpha
+    assert alpha(0) == 255
+    assert alpha(0) > alpha(90) > alpha(180) > alpha(197)
+    assert alpha(200) == alpha(359) == int(255 * 0.12)
+    assert alpha(360) == 255  # a full turn later it is swept again
+
+
+def test_sonar_scope_turns_once_every_three_seconds(qapp):
+    spinner = gui.RadarSpinner()
+    frames_per_turn = 360 / spinner.SWEEP_STEP
+    assert frames_per_turn * 25 == 3000  # 25ms frames
+    start = spinner._angle
+    for _ in range(int(frames_per_turn)):
+        spinner._tick()
+    assert abs((spinner._angle - start) % 360) < 1e-6
+
+
+def test_sonar_scope_paints_at_every_size(qapp):
+    for size in (48, 96, 170):
+        assert not gui.RadarSpinner(size=size).grab().isNull()
