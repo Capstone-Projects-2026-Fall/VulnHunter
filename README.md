@@ -28,7 +28,9 @@ pip install -r gui/requirements.txt
 python gui/main_gui.py
 ```
 
-Leave the **Demo** box checked and press **Scan**. Live scans are not implemented yet, so do not uncheck Demo.
+Leave the **Demo** box checked and press **Scan**. Live scans are not implemented yet, so keep Demo checked.
+
+Fix, Accept and Ignore work on sample data only. Verify and Report are not available yet. The GUI needs **Python 3.11 or newer** (tested on 3.12.10).
 
 To run the GUI tests (sample data only), from the repo root:
 

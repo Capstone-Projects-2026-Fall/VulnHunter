@@ -76,6 +76,8 @@ class ApiConnectorPage(QWidget):
         title.setObjectName("title")
         subtitle = QLabel("Connect VulnHunter to an AI model with your own API key.")
         subtitle.setStyleSheet(f"color: {MUTED};")
+        self.title_label = title
+        self.subtitle_label = subtitle
 
         self.provider_box = QComboBox()
         for key, p in PROVIDERS.items():
@@ -146,6 +148,7 @@ class ApiConnectorPage(QWidget):
         cl.addWidget(note)
 
         layout = QVBoxLayout(self)
+        self._outer_layout = layout
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
         layout.addWidget(title)
@@ -155,6 +158,13 @@ class ApiConnectorPage(QWidget):
 
         self._load_form("claude")
         self._refresh_state()
+
+    def set_compact(self, compact):
+        """Compact (inside the popover under the status pill): no title or subtitle, no outer margin."""
+        self.title_label.setVisible(not compact)
+        self.subtitle_label.setVisible(not compact)
+        margin = 0 if compact else 24
+        self._outer_layout.setContentsMargins(margin, margin, margin, margin)
 
     # ---- form <-> settings
     def _form_values(self):

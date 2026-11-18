@@ -1,7 +1,14 @@
+import sys
+
+if sys.version_info < (3, 11):  # the agent config this GUI loads needs tomllib
+    sys.exit(f"VulnHunter GUI needs Python 3.11 or newer (this is {sys.version.split()[0]}). "
+             "Install a newer Python, then run it again.")
+
 import math
+import os
 import random
 import re
-import sys
+from urllib.parse import quote
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -11,20 +18,25 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QConicalGradient, QFont, QPainter, QPainterPath, QPen
+from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import (
+    QBrush, QColor, QConicalGradient, QDesktopServices, QFont, QPainter, QPainterPath, QPen,
+    QTextCursor, QTextFormat,
+)
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QStackedWidget, QStyle, QStyledItemDelegate,
-    QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QSizePolicy,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QStyle, QStyledItemDelegate,
+    QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QSizePolicy,
 )
 
 from gui.data.mock_data import (
     ACCEPT_REASONS, ALL_REPOS, BURNDOWN_BY_REPO, DISABLED_MODELS, HUNT_PHASE, IGNORE_REASONS,
     MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_PHASES, SCAN_PHRASES, SEED_HISTORY,
     SEVERITY_ORDER, ScanRecord, burndown_series, burndown_totals, code_url, phase_of_line,
-    burndown_repo_key, result_level, sample_fix, sample_snippet, severity_summary, split_location,
+    burndown_repo_key, cwe_name, cwe_url, open_by_severity, result_level, sample_fix, sample_repo_findings,
+    sample_snippet, severity_summary, split_location,
 )
 from llm_connector.conn_all_llm import LLMConnector
 from gui.api_conn_page import ApiConnectorPage
@@ -88,6 +100,12 @@ QPushButton#link {
 }
 QPushButton#link:hover { color: #7DD3FC; background: transparent; }
 QCheckBox { background: transparent; spacing: 8px; }
+QTabBar::tab {
+    background: transparent; color: #8CA3C0; padding: 8px 4px; margin-right: 26px; border: 0;
+    border-bottom: 2px solid transparent; font-weight: 600;
+}
+QTabBar::tab:selected { color: #E6EEF8; border-bottom: 2px solid #38BDF8; }
+QTabBar::tab:hover { color: #E6EEF8; }
 QLineEdit, QComboBox {
     background: #0F1C31; border: 1px solid #223A5A; border-radius: 10px; padding: 10px 14px;
 }
@@ -183,6 +201,36 @@ def make_table(headers):
     return table
 
 
+class Breadcrumb(QWidget):
+    """A visible way back: '<- Scan History / github.com/testrepo'."""
+    back_clicked = pyqtSignal()
+
+    def __init__(self, back_text, current=""):
+        super().__init__()
+        self.back_btn = QPushButton(f"← {back_text}")
+        self.back_btn.setObjectName("link")
+        self.back_btn.setCursor(Qt.PointingHandCursor)
+        self.back_btn.setToolTip(f"Back to {back_text}")
+        self.back_btn.clicked.connect(self.back_clicked)
+        self.separator = QLabel("/")
+        self.separator.setObjectName("muted")
+        self.current = QLabel()
+        self.current.setObjectName("muted")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.addWidget(self.back_btn)
+        row.addWidget(self.separator)
+        row.addWidget(self.current)
+        row.addStretch()
+        self.set_current(current)
+
+    def set_current(self, text):
+        self.current.setText(text)
+        self.separator.setVisible(bool(text))
+        self.current.setVisible(bool(text))
+
+
 class ClickableCard(QFrame):
     """A card that behaves like a button: pointing hand, an outline on hover, and a clicked signal."""
     clicked = pyqtSignal()
@@ -245,7 +293,6 @@ class SeverityTracker(QFrame):
     def __init__(self):
         super().__init__()
         self.setObjectName("card")
-        self.setFixedWidth(200)
         box = QVBoxLayout(self)
         heading = QLabel("Severity")
         heading.setObjectName("severityHeading")
@@ -344,10 +391,60 @@ class ModuleCard(QPushButton):
         lay.addSpacing(16)
         lay.addWidget(go)
 
+class GettingStartedBanner(QFrame):
+    """The first steps, as a dismissible card on the home page (not a popup)."""
+    closed = pyqtSignal(bool)  # True when "Don't show this again" was ticked
+    STEPS = ["Click the status pill to add your API key",
+             "Start a New Scan, or open Scan History",
+             "Review findings, then Fix, Accept or Ignore"]
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        title = QLabel("Getting started")
+        title.setStyleSheet("font-weight: 600;")
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setObjectName("iconButton")
+        self.close_btn.setToolTip("Dismiss")
+        self.close_btn.clicked.connect(self._close)
+        header = QHBoxLayout()
+        header.addWidget(title)
+        header.addStretch()
+        header.addWidget(self.close_btn)
+
+        steps = QHBoxLayout()
+        steps.setSpacing(28)
+        for number, text in enumerate(self.STEPS, 1):
+            badge = QLabel(str(number))
+            badge.setFixedSize(26, 26)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet("background: #38BDF8; color: #05101F; border-radius: 13px; font-weight: 600;")
+            label = QLabel(text)
+            label.setWordWrap(True)
+            step = QHBoxLayout()
+            step.setSpacing(10)
+            step.addWidget(badge)
+            step.addWidget(label, 1)
+            steps.addLayout(step, 1)
+        self.dont_show = QCheckBox("Don't show this again")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 12, 12, 14)
+        layout.setSpacing(8)
+        layout.addLayout(header)
+        layout.addLayout(steps)
+        layout.addWidget(self.dont_show)
+
+    def _close(self):
+        self.hide()
+        self.closed.emit(self.dont_show.isChecked())
+
+
 class HomePage(QWidget):
     history_requested = pyqtSignal()
-    stats_requested = pyqtSignal()
+    reports_requested = pyqtSignal()
     new_scan_requested = pyqtSignal()
+    getting_started_closed = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -355,10 +452,13 @@ class HomePage(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(HOME_QSS)
 
+        self.getting_started = GettingStartedBanner()
+        self.getting_started.closed.connect(self.getting_started_closed)
+
         heading = QLabel("Welcome back, dev")
         heading.setObjectName("homeHeading")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("Review findings, track stats, or start a scan.")
+        sub = QLabel("Review findings, track reports, or start a scan.")
         sub.setObjectName("homeSub")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -373,7 +473,7 @@ class HomePage(QWidget):
         cards.addStretch(1)
         for icon, title, desc, signal in [
             ("▦", "Scan History", "Past scans and their findings.", self.history_requested),
-            ("◔", "Stats", "Burndown across all repos.", self.stats_requested),
+            ("◔", "Reports", "Burndown, severity and provider comparison.", self.reports_requested),
         ]:
             card = ModuleCard(icon, title, desc)
             card.clicked.connect(signal.emit)
@@ -381,8 +481,9 @@ class HomePage(QWidget):
         cards.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(48, 36, 48, 36)
+        layout.setContentsMargins(48, 28, 48, 36)
         layout.setSpacing(0)
+        layout.addWidget(self.getting_started)
         layout.addStretch(1)
         layout.addWidget(heading)
         layout.addSpacing(8)
@@ -392,6 +493,9 @@ class HomePage(QWidget):
         layout.addSpacing(30)
         layout.addLayout(cards)
         layout.addStretch(2)
+
+    def set_getting_started_visible(self, visible):
+        self.getting_started.setVisible(visible)
 
 
 class BurndownChart(QWidget):
@@ -462,57 +566,181 @@ class BurndownChart(QWidget):
             p.drawText(QRectF(left + 236, 4, 200, 24), Qt.AlignLeft | Qt.AlignVCenter, "Ideal burndown")
 
 
-class StatsPage(QWidget):
-    """Burndown across all sample repos, with a repo filter. Sample data only."""
+class ReportsPage(QWidget):
+    """Reports: Overview, Providers and Quality tabs. Everything here is invented sample data."""
+    back_requested = pyqtSignal()
+    new_scan_requested = pyqtSignal()
+    TABS = ("Overview", "Providers", "Quality")
+    BAR_WIDTH = 220
 
     def __init__(self):
         super().__init__()
-        title = QLabel("Vulnerabilities Burndown")
+        self.breadcrumb = Breadcrumb("Home", "Reports")
+        self.breadcrumb.back_clicked.connect(self.back_requested)
+        title = QLabel("Reports")
         title.setObjectName("statsTitle")
+        self.tabs = QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.setExpanding(False)
+        for name in self.TABS:
+            self.tabs.addTab(name)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_overview())
+        self.pages.addWidget(self._build_providers())
+        self.pages.addWidget(self._build_quality())
+        self.tabs.currentChanged.connect(self.pages.setCurrentIndex)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(10)
+        layout.addWidget(self.breadcrumb)
+        layout.addWidget(title)
+        layout.addWidget(self.tabs, 0, Qt.AlignLeft)
+        layout.addWidget(self.pages, 1)
+        self._update()
+
+    @staticmethod
+    def _card(title, subtitle):
+        card = QFrame()
+        card.setObjectName("card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(16, 14, 16, 14)
+        box.setSpacing(4)
+        heading = QLabel(title)
+        heading.setStyleSheet("font-weight: 600;")
+        note = QLabel(subtitle)
+        note.setObjectName("muted")
+        box.addWidget(heading)
+        box.addWidget(note)
+        return card, box
+
+    def _build_overview(self):
+        page = QWidget()
         self.repo_box = QComboBox()
         self.repo_box.addItem(ALL_REPOS)
         self.repo_box.addItems(list(BURNDOWN_BY_REPO))
-        self.repo_box.setToolTip("Show the burndown for all repos or for one.")
+        self.repo_box.setToolTip("Show the reports for all repos or for one.")
         self.repo_box.currentIndexChanged.connect(self._update)
+        self.reset_btn = QPushButton("Reset to default")
+        self.reset_btn.setObjectName("link")
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.clicked.connect(lambda: self.repo_box.setCurrentIndex(0))
+        filters = QHBoxLayout()
+        filters.addWidget(self.repo_box)
+        filters.addStretch()
+        filters.addWidget(self.reset_btn)
 
-        top = QHBoxLayout()
-        top.addWidget(title)
-        top.addStretch()
-        top.addWidget(self.repo_box)
-
-        cards = QHBoxLayout()
-        cards.setSpacing(12)
+        strip = QHBoxLayout()
+        strip.setSpacing(12)
         self.card_values = {}
-        for name in ("Open", "Closed", "Total"):
+        for name in ("Open", "Closed", "Total", "Cost per confirmed finding"):
             card = QFrame()
             card.setObjectName("card")
             box = QVBoxLayout(card)
-            value = QLabel("0")
+            value = QLabel("n/a" if name.startswith("Cost") else "0")
             value.setObjectName("cardValue")
             box.addWidget(value)
             box.addWidget(QLabel(name))
+            if name.startswith("Cost"):
+                card.setToolTip("Needs real scan runs with token usage, so it is not available on sample data.")
             self.card_values[name] = value
-            cards.addWidget(card)
+            strip.addWidget(card)
 
+        burn_card, burn_box = self._card("Burndown", "Open findings over time (dashed: ideal burndown)")
         self.chart = BurndownChart()
-        note = QLabel("Solid: open findings. Dashed: ideal burndown. "
-                      "Sample data, not real scan results.")
+        burn_box.addWidget(self.chart, 1)
+        sev_card, sev_box = self._card("Findings by severity", "Current open findings")
+        self.severity_values = {}
+        self.severity_bars = {}
+        for tier in SEVERITY_ORDER:
+            name = QLabel(tier)
+            name.setFixedWidth(130)
+            bar = QFrame()
+            bar.setFixedHeight(18)
+            bar.setStyleSheet(f"background: {SEVERITY_COLORS[tier][1]}; border-radius: 4px;")
+            value = QLabel("0")
+            row = QHBoxLayout()
+            row.addWidget(name)
+            row.addWidget(bar)
+            row.addStretch()
+            row.addWidget(value)
+            sev_box.addLayout(row)
+            self.severity_bars[tier] = bar
+            self.severity_values[tier] = value
+        sev_box.addStretch()
+        grid = QHBoxLayout()
+        grid.setSpacing(12)
+        grid.addWidget(burn_card, 3)
+        grid.addWidget(sev_card, 2)
+        note = QLabel("Sample data, not real scan results.")
         note.setObjectName("muted")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        layout.addLayout(top)
-        layout.addLayout(cards)
-        layout.addWidget(self.chart, 1)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(12)
+        layout.addLayout(filters)
+        layout.addLayout(strip)
+        layout.addLayout(grid, 1)
         layout.addWidget(note)
-        self._update()
+        return page
+
+    def _empty_state(self, title, text, button_text=None):
+        page = QWidget()
+        card = QFrame()
+        card.setObjectName("card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(32, 36, 32, 36)
+        box.setSpacing(10)
+        heading = QLabel(title)
+        heading.setObjectName("title")
+        heading.setAlignment(Qt.AlignCenter)
+        body = QLabel(text)
+        body.setObjectName("muted")
+        body.setAlignment(Qt.AlignCenter)
+        body.setWordWrap(True)
+        box.addWidget(heading)
+        box.addWidget(body)
+        button = None
+        if button_text:
+            button = QPushButton(button_text)
+            button.setObjectName("primary")
+            box.addWidget(button, 0, Qt.AlignHCenter)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.addWidget(card)
+        layout.addStretch()
+        return page, button
+
+    def _build_providers(self):
+        page, button = self._empty_state(
+            "No provider runs yet",
+            "Run the same repository with two providers to compare tokens, cost and time side by side.",
+            "Start a comparison")
+        button.clicked.connect(self.new_scan_requested)
+        self.providers_button = button
+        return page
+
+    def _build_quality(self):
+        page, _button = self._empty_state(
+            "No benchmark results yet",
+            "Scanner quality will show precision, recall and misses once a benchmark has been run.")
+        return page
 
     def _update(self, *_args):
-        series = burndown_series(self.repo_box.currentText())
+        repo = self.repo_box.currentText()
+        series = burndown_series(repo)
         self.chart.set_points(series)
-        for name, value in zip(("Open", "Closed", "Total"), burndown_totals(series)):
+        open_now, closed, total = burndown_totals(series)
+        for name, value in (("Open", open_now), ("Closed", closed), ("Total", total)):
             self.card_values[name].setText(str(value))
+        counts = open_by_severity(sample_repo_findings(repo))
+        peak = max(counts.values(), default=0)
+        for tier in SEVERITY_ORDER:
+            n = counts.get(tier, 0)
+            self.severity_values[tier].setText(str(n))
+            self.severity_bars[tier].setVisible(n > 0)
+            if n:
+                self.severity_bars[tier].setFixedWidth(max(8, int(self.BAR_WIDTH * n / peak)))
 
 
 ALL_MODELS = "All models"
@@ -520,6 +748,7 @@ ALL_MODELS = "All models"
 
 class HistoryPage(QWidget):
     new_scan = pyqtSignal()
+    back_requested = pyqtSignal()
     record_selected = pyqtSignal(int)
 
     def __init__(self):
@@ -589,6 +818,9 @@ class HistoryPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
+        self.breadcrumb = Breadcrumb("Home", "Scan History")
+        self.breadcrumb.back_clicked.connect(self.back_requested)
+        layout.addWidget(self.breadcrumb)
         layout.addLayout(top)
         layout.addLayout(cards)
         layout.addLayout(filters)
@@ -723,79 +955,6 @@ def apply_decision(finding, decision, reason, note):
     finding.reason = reason
     finding.note = note.strip()
     finding.status = decision
-
-
-class DecisionDialog(QDialog):
-    """Mock accept/ignore form: pick a reason and add context. Nothing is changed in any repository."""
-
-    def __init__(self, parent, finding, kind):
-        super().__init__(parent)
-        self.finding = finding
-        self.kind = kind  # "Accept" or "Ignore"
-        self.decision = "Accepted" if kind == "Accept" else "Ignored"
-        self.setWindowTitle(f"{kind} fix for {finding.id}")
-        self.setMinimumWidth(680)
-
-        context = QLabel(
-            f"{finding.id}  |  {finding.severity}  |  {finding.cwe or 'no CWE'}\n"
-            f"{finding.title}\n{finding.location}\n\n"
-            f"Proposed fix (sample): {sample_fix(finding)}")
-        context.setWordWrap(True)
-        self.reason = QComboBox()
-        self.reason.addItems(ACCEPT_REASONS if kind == "Accept" else IGNORE_REASONS)
-        self.note = QPlainTextEdit()
-        self.note.setPlaceholderText("Context for the team: why are you making this decision? (optional)")
-        self.note.setFixedHeight(110)
-        mocked = QLabel("Mocked: nothing is changed in any repository.")
-        mocked.setObjectName("muted")
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText(f"{kind} fix")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.addWidget(context)
-        layout.addWidget(QLabel("Reason"))
-        layout.addWidget(self.reason)
-        layout.addWidget(QLabel("Context"))
-        layout.addWidget(self.note)
-        layout.addWidget(mocked)
-        layout.addWidget(buttons)
-
-
-class CodeViewDialog(QDialog):
-    """Mock code viewer: an invented snippet around the flagged line. Not from a real repository."""
-
-    def __init__(self, parent, finding):
-        super().__init__(parent)
-        _path, line = split_location(finding.location)
-        self.setWindowTitle(f"{finding.id}: {finding.location}")
-        self.setMinimumSize(820, 420)
-
-        header = QLabel(f"{finding.title}\n{finding.location}")
-        header.setWordWrap(True)
-        link = QLabel(code_url(finding))
-        link.setObjectName("muted")
-        link.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.code = QPlainTextEdit()
-        self.code.setReadOnly(True)
-        self.code.setFont(QFont("Consolas", 11))
-        rows = sample_snippet(finding)
-        self.code.setPlainText(
-            "\n".join(f"{'>' if n == line else ' '} {n:>4} | {text}" for n, text in rows)
-            if rows else "No sample snippet for this finding.")
-        note = QLabel("Sample snippet, invented for the demo. The link above is a sample and is not opened.")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.addWidget(header)
-        layout.addWidget(link)
-        layout.addWidget(self.code, 1)
-        layout.addWidget(note)
 
 
 REMINDER_KEY = "gettingStarted/hidden"
@@ -1078,61 +1237,24 @@ class PhraseRotator:
         return queue.pop(0)
 
 
-class GettingStartedDialog(QDialog):
-    """A closable reminder of the first steps, shown on launch until the user opts out."""
-    STEPS = ["Connect your API: click the status at the top right",
-             "Start a New Scan, or open Scan History",
-             "Review findings, then Fix, Accept or Ignore"]
+class ApiPopover(FloatingCard):
+    """The API settings, as a small popover under the status pill (Esc or a click outside closes it)."""
+    CARD_WIDTH = 400
+    CARD_MIN_HEIGHT = 0
 
-    def __init__(self, parent):
+    def __init__(self, parent, connector_page, pill):
         super().__init__(parent)
-        self.setWindowTitle("Getting started")
-        self.setMinimumWidth(480)
-        title = QLabel("Getting started")
-        title.setObjectName("popupTitle")
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.addWidget(title)
-        for number, text in enumerate(self.STEPS, 1):
-            badge = QLabel(str(number))
-            badge.setFixedSize(26, 26)
-            badge.setAlignment(Qt.AlignCenter)
-            badge.setStyleSheet("background: #38BDF8; color: #05101F; border-radius: 13px; font-weight: 600;")
-            row = QHBoxLayout()
-            row.setSpacing(12)
-            row.addWidget(badge)
-            row.addWidget(QLabel(text), 1)
-            layout.addLayout(row)
-
-        self.dont_show = QCheckBox("Don't show this again")
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.accept)
-        footer = QHBoxLayout()
-        footer.addWidget(self.dont_show)
-        footer.addStretch()
-        footer.addWidget(self.close_btn)
-        layout.addSpacing(6)
-        layout.addLayout(footer)
-
-
-class ApiSettingsDialog(QDialog):
-    """The API connector, opened from the gear icon in the header."""
-
-    def __init__(self, parent, connector_page):
-        super().__init__(parent)
-        self.setWindowTitle("API settings")
-        self.setMinimumWidth(640)
+        self.pill = pill
         self.connector_page = connector_page
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        footer = QHBoxLayout()
-        footer.addStretch()
-        footer.addWidget(close_btn)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        self.setWindowModality(Qt.NonModal)
+        connector_page.set_compact(True)
+        layout = QVBoxLayout(self.card)
+        layout.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(connector_page)
-        layout.addLayout(footer)
+
+    def place(self):
+        corner = self.pill.mapToGlobal(QPoint(self.pill.width(), self.pill.height()))
+        self.move(corner.x() - self.width(), corner.y() + 8)
 
 
 class ScanProgressDialog(FloatingCard):
@@ -1185,80 +1307,65 @@ class ScanProgressDialog(FloatingCard):
         super().reject()
 
 
-class ScanResultDialog(FloatingCard):
-    """Result card shown when a scan finishes: red, amber or green, with a count per severity.
-    All its text is one size. Centred, like the scanning screen."""
-    CENTERED = True
-    TEXT_SIZE = 18
+class ResultBanner(QFrame):
+    """An inline summary after a scan: red, amber or green, with a count per severity. Dismissible."""
     BANNERS = {  # level: (background, border, text colour, icon)
         "high": ("#2A1010", "#6B2A2A", "#F87171", "⚠"),
         "other": ("#2A2410", "#6B5A1F", "#F5C451", "⚠"),
         "none": ("#0F2A1C", "#1F5A38", "#4ADE80", "✓"),
     }
-    CHIPS = SEVERITY_COLORS
-    DEFAULT_CHIP = ("#172A47", "#9FB3CC")
 
-    def __init__(self, parent, findings):
-        super().__init__(parent)
-        self.setWindowModality(Qt.WindowModal)
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("resultBanner")
+        self.level = None
+        self.label = QLabel()
+        self.label.setWordWrap(True)
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setObjectName("iconButton")
+        self.close_btn.setToolTip("Dismiss")
+        self.close_btn.clicked.connect(self.hide)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 8, 8, 8)
+        row.addWidget(self.label, 1)
+        row.addWidget(self.close_btn)
+        self.hide()
+
+    def show_findings(self, findings):
         self.level = result_level(findings)
         background, border, colour, icon = self.BANNERS[self.level]
         count = len(findings)
         if count == 0:
-            text = "No vulnerabilities found"
+            headline = "No vulnerabilities found"
         else:
-            text = f"{count} {'vulnerability' if count == 1 else 'vulnerabilities'} detected"
-        size = f"font-size: {self.TEXT_SIZE}px;"
+            headline = f"{count} {'vulnerability' if count == 1 else 'vulnerabilities'} detected"
+        summary = ", ".join(f"{n} {tier}" for tier, n in severity_summary(findings))
+        parts = [f"{icon}  {headline}"] + ([summary] if summary else []) + ["sample results"]
+        self.label.setText("  |  ".join(parts))
+        self.setStyleSheet(
+            f"QFrame#resultBanner {{ background: {background}; border: 1px solid {border}; border-radius: 12px; }}"
+            f"QLabel {{ color: {colour}; background: transparent; font-size: 18px; font-weight: 600; }}"
+            f"QPushButton {{ color: {colour}; }}")
+        self.show()
 
-        banner = QFrame()
-        banner.setStyleSheet(f"background: {background}; border: 1px solid {border}; border-radius: 12px;")
-        self.banner_label = QLabel(f"{icon}  {text}")
-        self.banner_label.setStyleSheet(
-            f"color: {colour}; {size} font-weight: 600; border: 0; background: transparent;")
-        banner_box = QVBoxLayout(banner)
-        banner_box.setContentsMargins(16, 12, 16, 12)
-        banner_box.addWidget(self.banner_label)
 
-        chips = QHBoxLayout()
-        chips.setSpacing(8)
-        self.chips = []
-        for tier, n in severity_summary(findings):
-            chip_bg, chip_fg = self.CHIPS.get(tier, self.DEFAULT_CHIP)
-            chip = QLabel(f"{n} {tier}")
-            chip.setStyleSheet(
-                f"background: {chip_bg}; color: {chip_fg}; border-radius: 12px; padding: 3px 12px; {size}")
-            chips.addWidget(chip)
-            self.chips.append(chip)
-        chips.addStretch()
-
-        note = QLabel("Sample results")
-        note.setStyleSheet(f"color: #8CA3C0; {size} background: transparent;")
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.reject)
-        self.view_btn = QPushButton("View findings")
-        self.view_btn.setObjectName("primary")
-        self.view_btn.clicked.connect(self.accept)
-        self.view_btn.setVisible(count > 0)
-        footer = QHBoxLayout()
-        footer.addWidget(note)
-        footer.addStretch()
-        footer.addWidget(self.close_btn)
-        footer.addWidget(self.view_btn)
-
-        layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(14)
-        layout.addStretch(1)
-        layout.addWidget(banner)
-        if self.chips:
-            layout.addLayout(chips)
-        layout.addStretch(1)
-        layout.addLayout(footer)
+def editor_uri(repo_text, location):
+    """vscode:// link to the flagged line, only when the repo is an existing local folder holding the file."""
+    repo_text = (repo_text or "").strip()
+    if not repo_text or not os.path.isdir(repo_text):
+        return ""
+    path, line = split_location(location)
+    full = (Path(repo_text) / path).resolve()
+    if not path or not full.is_file():
+        return ""
+    return f"vscode://file/{quote(full.as_posix(), safe='/:')}:{line or 1}"
 
 
 class ScanPage(QWidget):
     finished = pyqtSignal(object)  # emits a ScanRecord
     repo_chart_requested = pyqtSignal(str)  # the small burndown was clicked: show the big one for this repo
+    back_requested = pyqtSignal()
+    SIDE_WIDTH = 340
 
     def __init__(self, sample_findings, sample_output):
         super().__init__()
@@ -1274,11 +1381,14 @@ class ScanPage(QWidget):
         self.phrases = PhraseRotator()
         self.progress = None  # the scanning popup while a scan runs
         self._dim = None  # darkens the window behind it
-        self._result_dim = None
-        self._detail_dim = None
         self._chart_repo = None
-        self.result_dialog = None
+        self._decision_kind = None
+        self._form_finding = None
         self._phase = 0
+
+        self.breadcrumb = Breadcrumb("Scan History", "New scan")
+        self.breadcrumb.back_clicked.connect(self.back_requested)
+        self.banner = ResultBanner()
 
         # Top row: repository, model, demo, scan
         self.repo = QLineEdit()
@@ -1314,10 +1424,11 @@ class ScanPage(QWidget):
         self.table.setItemDelegate(SeverityRowDelegate(self.table))
         self.table.itemSelectionChanged.connect(self._refresh_detail)
         self.table.cellClicked.connect(self._on_row_clicked)
+
+        # Right column: overview (severity counts + repo burndown) or the clicked finding.
         self.tracker = SeverityTracker()
         self.repo_chart = BurndownChart(compact=True)
         chart_card = ClickableCard()
-        chart_card.setFixedWidth(200)
         chart_card.setToolTip("Click for a bigger chart")
         chart_card.clicked.connect(self._open_repo_chart)
         self.repo_chart_card = chart_card
@@ -1332,29 +1443,101 @@ class ScanPage(QWidget):
         chart_box.addWidget(chart_heading)
         chart_box.addWidget(self.repo_chart, 1)
         chart_box.addWidget(chart_note)
-        side = QVBoxLayout()
-        side.setSpacing(12)
-        side.addWidget(self.tracker)
-        side.addWidget(chart_card, 1)
+        overview = QWidget()
+        overview_box = QVBoxLayout(overview)
+        overview_box.setContentsMargins(0, 0, 0, 0)
+        overview_box.setSpacing(12)
+        overview_box.addWidget(self.tracker)
+        overview_box.addWidget(chart_card, 1)
+
+        self.detail = self._build_detail_panel()
+        self.side = QStackedWidget()
+        self.side.setFixedWidth(self.SIDE_WIDTH)
+        self.detail_scroll = QScrollArea()  # the panel scrolls when the decision form makes it tall
+        self.detail_scroll.setWidgetResizable(True)
+        self.detail_scroll.setFrameShape(QFrame.NoFrame)
+        self.detail_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.detail_scroll.setWidget(self.detail)
+        self.side.addWidget(overview)
+        self.side.addWidget(self.detail_scroll)
+
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(self.table, 1)
-        body.addLayout(side)
+        body.addWidget(self.side)
 
-        # Selected finding: details and actions. Fix, Accept, Ignore and View in code are
-        # mocked: they work on sample data only and never touch a repository.
-        self.detail = QFrame(self)  # a card that opens over the page when a finding is clicked
-        self.detail.setObjectName("popupCard")
-        self.detail.hide()
+        # Output: collapsed until asked for
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setMaximumHeight(180)
+        self.output.hide()
+        self.log_toggle = QPushButton("▸ Scan log")
+        self.log_toggle.setObjectName("link")
+        self.log_toggle.setCursor(Qt.PointingHandCursor)
+        self.log_toggle.setToolTip("Show or hide the scan log.")
+        self.log_toggle.clicked.connect(self._toggle_log)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(12)
+        layout.addWidget(self.breadcrumb)
+        layout.addWidget(self.banner)
+        layout.addLayout(top)
+        layout.addLayout(body, 1)
+        layout.addWidget(self.log_toggle, 0, Qt.AlignLeft)
+        layout.addWidget(self.output)
+
+        self._refresh_detail()
+
+    def _build_detail_panel(self):
+        """The clicked finding: details and actions. Fix, Accept, Ignore, Verify and Report are
+        mocked: they work on sample data only and never touch a repository."""
+        panel = QFrame()
+        panel.setObjectName("card")
         self.detail_heading = QLabel()
         self.detail_heading.setStyleSheet("font-weight: 600;")
+        self.detail_close = QPushButton("✕")
+        self.detail_close.setObjectName("iconButton")
+        self.detail_close.setToolTip("Close")
+        self.detail_close.clicked.connect(self._close_detail)
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(self.detail_heading, 1)
+        heading_row.addWidget(self.detail_close)
+
+        self.cwe_link = QPushButton()
+        self.cwe_link.setObjectName("link")
+        self.cwe_link.setCursor(Qt.PointingHandCursor)
+        self.cwe_link.clicked.connect(self._open_cwe)
         self.detail_title = QLabel()
         self.detail_title.setWordWrap(True)
-        self.code_link = QPushButton()  # styled as a link in STYLE
-        self.code_link.setObjectName("link")
-        self.code_link.setCursor(Qt.PointingHandCursor)
-        self.code_link.setToolTip("Show the flagged code (sample snippet).")
-        self.code_link.clicked.connect(self._view_code)
+        self.location_label = QLabel()
+        self.location_label.setObjectName("muted")
+        self.location_label.setWordWrap(True)
+        self.editor_btn = QPushButton("Open in editor")
+        self.editor_btn.clicked.connect(self._open_in_editor)
+        self.copy_btn = QPushButton("Copy")
+        self.copy_btn.setToolTip("Copy the file location.")
+        self.copy_btn.clicked.connect(self._copy_location)
+        link_row = QHBoxLayout()
+        link_row.setSpacing(8)
+        link_row.addWidget(self.editor_btn)
+        link_row.addWidget(self.copy_btn)
+        link_row.addStretch()
+
+        self.code_view = QPlainTextEdit()
+        self.code_view.setReadOnly(True)
+        self.code_view.setFixedHeight(150)
+        self.code_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.code_view.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
+        fix_heading = QLabel("Proposed fix (sample)")
+        fix_heading.setStyleSheet("font-weight: 600;")
+        self.fix_text = QLabel()
+        self.fix_text.setWordWrap(True)
+        self.fix_text.setObjectName("muted")
+        self.action_note = QLabel()
+        self.action_note.setWordWrap(True)
+        self.action_note.setObjectName("muted")
+        self.action_note.hide()
         self.decision_label = QLabel()
         self.decision_label.setObjectName("muted")
         self.decision_label.setWordWrap(True)
@@ -1375,74 +1558,94 @@ class ScanPage(QWidget):
         self.ignore_btn.clicked.connect(lambda: self._decide("Ignore"))
         for btn in (self.verify_btn, self.report_btn):
             btn.clicked.connect(lambda _checked, b=btn: self._not_implemented(b.text()))
-
-        heading_row = QHBoxLayout()
-        heading_row.addWidget(self.detail_heading)
-        heading_row.addStretch()
-        self.detail_close = QPushButton("✕")
-        self.detail_close.setObjectName("iconButton")
-        self.detail_close.setToolTip("Close")
-        self.detail_close.clicked.connect(self._close_detail)
-        heading_row.addWidget(self.detail_close)
+        # A widget's own stylesheet beats inherited ones, so size each button here.
+        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn,
+                    self.editor_btn, self.copy_btn):
+            btn.setStyleSheet("padding: 8px 14px;")
         actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions.setSpacing(8)
         for btn in (self.fix_btn, self.accept_btn, self.ignore_btn):
             actions.addWidget(btn)
         actions.addStretch()
-        for btn in (self.verify_btn, self.report_btn):
-            actions.addWidget(btn)
-        detail_box = QVBoxLayout(self.detail)
-        detail_box.setContentsMargins(24, 18, 24, 22)
-        detail_box.setSpacing(8)
-        detail_box.addLayout(heading_row)
-        detail_box.addWidget(self.detail_title)
-        detail_box.addWidget(self.code_link, 0, Qt.AlignLeft)
-        detail_box.addWidget(self.decision_label)
-        detail_box.addLayout(actions)
+        more = QHBoxLayout()
+        more.setSpacing(8)
+        more.addWidget(self.verify_btn)
+        more.addWidget(self.report_btn)
+        more.addStretch()
 
-        # Output
-        self.output = QPlainTextEdit()
-        self.output.setReadOnly(True)
-        self.log_toggle = QPushButton("▾ Scan log")
-        self.log_toggle.setObjectName("link")
-        self.log_toggle.setCursor(Qt.PointingHandCursor)
-        self.log_toggle.setToolTip("Show or hide the scan log.")
-        self.log_toggle.clicked.connect(self._toggle_log)
+        # Inline form for Accept and Ignore
+        self.decision_form = QFrame()
+        self.decision_form.hide()
+        self.decision_title = QLabel()
+        self.decision_title.setStyleSheet("font-weight: 600;")
+        self.decision_reason = QComboBox()
+        self.decision_note = QPlainTextEdit()
+        self.decision_note.setPlaceholderText("Context (optional)")
+        self.decision_note.setFixedHeight(70)
+        self.decision_save = QPushButton("Save decision")
+        self.decision_save.setObjectName("primary")
+        self.decision_save.setStyleSheet("padding: 8px 14px;")
+        self.decision_save.clicked.connect(self._save_decision)
+        self.decision_cancel = QPushButton("Cancel")
+        self.decision_cancel.setStyleSheet("padding: 8px 14px;")
+        self.decision_cancel.clicked.connect(self._cancel_decision)
+        form_buttons = QHBoxLayout()
+        form_buttons.addWidget(self.decision_save)
+        form_buttons.addWidget(self.decision_cancel)
+        form_buttons.addStretch()
+        form = QVBoxLayout(self.decision_form)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setSpacing(6)
+        form.addWidget(self.decision_title)
+        form.addWidget(self.decision_reason)
+        form.addWidget(self.decision_note)
+        form.addLayout(form_buttons)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        layout.addLayout(top)
-        layout.addLayout(body, 2)
-        layout.addWidget(self.log_toggle, 0, Qt.AlignLeft)
-        layout.addWidget(self.output, 1)
-
-        self._refresh_detail()
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(14, 12, 14, 14)
+        box.setSpacing(6)
+        box.addLayout(heading_row)
+        box.addWidget(self.cwe_link, 0, Qt.AlignLeft)
+        box.addWidget(self.detail_title)
+        box.addWidget(self.location_label)
+        box.addLayout(link_row)
+        box.addWidget(self.code_view)
+        box.addWidget(fix_heading)
+        box.addWidget(self.fix_text)
+        box.addWidget(self.decision_label)
+        box.addWidget(self.action_note)
+        box.addLayout(actions)
+        box.addLayout(more)
+        box.addWidget(self.decision_form)
+        box.addStretch()
+        return panel
 
     # Page states
     def reset(self):
         """Blank page for a new scan."""
         self.timer.stop()
         self._close_progress()
-        self._close_result()
+        self.banner.hide()
         self._set_inputs_editable(True)
         self.repo.clear()
         self.demo.setChecked(True)
         self._fill_table([])
         self._set_repo_chart(None)
         self.output.clear()
+        self.breadcrumb.set_current("New scan")
         self._refresh_detail()
 
     def show_record(self, record):
         """Read-only view of a past scan."""
         self.timer.stop()
         self._close_progress()
-        self._close_result()
+        self.banner.hide()
         self.repo.setText(record.repo)
         self.demo.setChecked(record.mode == "Demo")
         self._fill_table(record.findings)
         self._set_repo_chart(record.repo)
         self.output.setPlainText("\n".join(record.output))
+        self.breadcrumb.set_current(record.repo)
         self._set_inputs_editable(False)
 
     def _toggle_log(self):
@@ -1457,10 +1660,8 @@ class ScanPage(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.table.resizeRowsToContents()
-        if not self.detail.isHidden():
-            self._place_detail()
 
-    # The small per-repo burndown opens the big one on the Stats page
+    # The small per-repo burndown opens the big one on the Reports page
     def _set_repo_chart(self, repo):
         self._chart_repo = repo
         self.repo_chart.set_points(burndown_series(repo) if repo else [])
@@ -1469,33 +1670,18 @@ class ScanPage(QWidget):
         if self._chart_repo:
             self.repo_chart_requested.emit(burndown_repo_key(self._chart_repo))
 
-    # Finding details: a card that opens when a finding is clicked
-    DETAIL_WIDTH = 760
-
+    # Finding panel: opens in the right column when a row is clicked (not when a scan selects row 0)
     def _on_row_clicked(self, _row, _column):
         if self._current_finding() is not None:  # the click has selected the row
             self._open_detail()
 
     def _open_detail(self):
         self._refresh_detail()
-        if self._detail_dim is None:
-            self._detail_dim = DimOverlay(self)
-            self._detail_dim.clicked.connect(self._close_detail)
-        self.detail.setFixedWidth(self.DETAIL_WIDTH)
-        self.detail.adjustSize()
-        self._place_detail()
-        self.detail.show()
-        self.detail.raise_()
-
-    def _place_detail(self):
-        self.detail.move((self.width() - self.detail.width()) // 2,
-                         (self.height() - self.detail.height()) // 2)
+        self.side.setCurrentIndex(1)
 
     def _close_detail(self):
-        self.detail.hide()
-        if self._detail_dim is not None:
-            dim, self._detail_dim = self._detail_dim, None
-            dim.dismiss()
+        self._cancel_decision()
+        self.side.setCurrentIndex(0)
 
     def _set_inputs_editable(self, editable):
         self.repo.setReadOnly(not editable)
@@ -1529,7 +1715,7 @@ class ScanPage(QWidget):
             return
 
         # Otherwise, run your existing simulated demo replay workflow
-        self._close_result()
+        self.banner.hide()
         self._fill_table([])
         self._set_repo_chart(None)
         self.output.clear()
@@ -1542,7 +1728,7 @@ class ScanPage(QWidget):
         self.timer.start(self.REPLAY_INTERVAL_MS)
         self.phrase_timer.start(self.PHRASE_INTERVAL_MS)
 
-    # Scanning popup and result card
+    # Scanning popup
     REPLAY_INTERVAL_MS = 300
     PHRASE_INTERVAL_MS = 2000
 
@@ -1570,18 +1756,6 @@ class ScanPage(QWidget):
             dialog.finish()
             dialog.deleteLater()
 
-    def _remove_result_dim(self, *_args):
-        if self._result_dim is not None:
-            dim, self._result_dim = self._result_dim, None
-            dim.dismiss()
-
-    def _close_result(self):
-        self._remove_result_dim()
-        if self.result_dialog is not None:
-            dialog, self.result_dialog = self.result_dialog, None
-            dialog.close()
-            dialog.deleteLater()
-
     def _rotate_phrase(self):
         if self.progress is not None:
             self.progress.set_phrase(self.phrases.next(self._phase))
@@ -1599,14 +1773,7 @@ class ScanPage(QWidget):
         self.scan_btn.setEnabled(True)
 
     def _show_result(self, findings):
-        self._close_result()
-        window = self.window()
-        if window is not self:
-            self._result_dim = DimOverlay(window)
-        self.result_dialog = ScanResultDialog(self, findings)
-        self.result_dialog.accepted.connect(self.table.setFocus)
-        self.result_dialog.finished.connect(self._remove_result_dim)
-        self.result_dialog.show()
+        self.banner.show_findings(findings)
 
     def _output_for_model(self):
         model = self.model_box.currentText()
@@ -1642,6 +1809,7 @@ class ScanPage(QWidget):
             tokens="n/a",  # a demo replay measures nothing, so show no usage figures
             duration="n/a",
         )
+        self.breadcrumb.set_current(record.repo)
         self.finished.emit(record)
         self._show_result(findings)
 
@@ -1674,20 +1842,35 @@ class ScanPage(QWidget):
     def _refresh_detail(self):
         """Show the selected finding's details and enable its actions."""
         finding = self._current_finding()
-        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn):
+        buttons = (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn,
+                   self.copy_btn)
+        for btn in buttons:
             btn.setEnabled(finding is not None)
         if finding is None:
             self.detail_heading.setText("No finding selected")
             self.detail_title.setText("Select a finding to see its details and actions.")
-            self.code_link.setText("")
-            self.code_link.hide()
-            self.decision_label.hide()
+            for widget in (self.cwe_link, self.location_label, self.decision_label, self.action_note):
+                widget.hide()
+            self.editor_btn.setEnabled(False)
+            self.code_view.setPlainText("")
+            self.fix_text.setText("")
             return
-        self.detail_heading.setText(
-            f"{finding.id}  |  {finding.severity}  |  {finding.cwe or 'no CWE'}  |  {finding.status}")
+        self.detail_heading.setText(f"{finding.id}  |  {finding.severity}  |  {finding.status}")
         self.detail_title.setText(finding.title)
-        self.code_link.setText(f"View in code: {finding.location}")
-        self.code_link.show()
+        url = cwe_url(finding.cwe)
+        self.cwe_link.setVisible(bool(url))
+        if url:
+            name = cwe_name(finding.cwe)
+            self.cwe_link.setText(f"{finding.cwe} {name} ↗" if name else f"{finding.cwe} ↗")
+            self.cwe_link.setToolTip(url)
+        self.location_label.setText(finding.location)
+        self.location_label.show()
+        self._editor_link = editor_uri(self.repo.text(), finding.location)
+        self.editor_btn.setEnabled(bool(self._editor_link))
+        self.editor_btn.setToolTip("Open the flagged line in VS Code." if self._editor_link else
+                                   "Needs a local repository folder that contains this file.")
+        self._show_code(finding)
+        self.fix_text.setText(sample_fix(finding))
         if finding.decision:
             text = f"{finding.decision}: {finding.reason}"
             if finding.note:
@@ -1697,6 +1880,25 @@ class ScanPage(QWidget):
         else:
             self.decision_label.hide()
 
+    def _show_code(self, finding):
+        snippet = sample_snippet(finding)
+        _path, flagged = split_location(finding.location)
+        if not snippet:
+            self.code_view.setPlainText("No sample code for this finding.")
+            self.code_view.setExtraSelections([])
+            return
+        lines = [f"{'>' if number == flagged else ' '} {number:>4} | {text}" for number, text in snippet]
+        self.code_view.setPlainText("\n".join(lines))
+        selections = []
+        for index, (number, _text) in enumerate(snippet):
+            if number == flagged:
+                selection = QTextEdit.ExtraSelection()
+                selection.format.setBackground(QColor("#3B2A12"))
+                selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+                selection.cursor = QTextCursor(self.code_view.document().findBlockByNumber(index))
+                selections.append(selection)
+        self.code_view.setExtraSelections(selections)
+
     def _refresh_status(self):
         """Put the selected finding's status back into its table row, then refresh the details."""
         rows = self.table.selectionModel().selectedRows()
@@ -1704,6 +1906,24 @@ class ScanPage(QWidget):
         if finding is not None:
             self.table.item(rows[0].row(), 4).setText(finding.status)
         self._refresh_detail()
+
+    def _open_cwe(self):
+        finding = self._current_finding()
+        if finding is not None and cwe_url(finding.cwe):
+            QDesktopServices.openUrl(QUrl(cwe_url(finding.cwe)))
+
+    def _open_in_editor(self):
+        if getattr(self, "_editor_link", ""):
+            QDesktopServices.openUrl(QUrl(self._editor_link))
+
+    def _copy_location(self):
+        finding = self._current_finding()
+        if finding is not None:
+            QApplication.clipboard().setText(finding.location)
+
+    def _note(self, text):
+        self.action_note.setText(text)
+        self.action_note.setVisible(bool(text))
 
     # Mocked actions on the selected finding
     def _propose_fix(self):
@@ -1713,33 +1933,41 @@ class ScanPage(QWidget):
         if not finding.decision:
             finding.status = "Fix proposed"
         self._refresh_status()
-        QMessageBox.information(
-            self, "VulnHunter",
-            f"Sample fix proposal for {finding.id}:\n\n{sample_fix(finding)}\n\n"
-            "Mocked: a real Fix would create a branch, write tests and open a pull request. "
-            "Nothing was changed.")
+        self._note("Sample fix proposal shown above. Mocked: a real Fix would create a branch, "
+                   "write tests and open a pull request. Nothing was changed.")
 
     def _decide(self, kind):
         finding = self._current_finding()
         if finding is None:
             return
-        dialog = DecisionDialog(self, finding, kind)
-        if dialog.exec_() == QDialog.Accepted:
-            apply_decision(finding, dialog.decision, dialog.reason.currentText(),
-                           dialog.note.toPlainText())
-            self._refresh_status()
+        self._decision_kind = kind
+        self._form_finding = finding
+        self.decision_title.setText(f"{kind}: {finding.id}")
+        self.decision_reason.clear()
+        self.decision_reason.addItems(ACCEPT_REASONS if kind == "Accept" else IGNORE_REASONS)
+        self.decision_note.clear()
+        self.decision_form.show()
 
-    def _view_code(self):
-        finding = self._current_finding()
+    def _save_decision(self):
+        finding = self._form_finding
         if finding is not None:
-            CodeViewDialog(self, finding).exec_()
+            decision = "Accepted" if self._decision_kind == "Accept" else "Ignored"
+            apply_decision(finding, decision, self.decision_reason.currentText(),
+                           self.decision_note.toPlainText())
+            self._refresh_status()
+        self._cancel_decision()
+
+    def _cancel_decision(self):
+        self._decision_kind = None
+        self._form_finding = None
+        self.decision_form.hide()
 
     def _not_implemented(self, name):
-        QMessageBox.information(self, "VulnHunter", f"{name} is not implemented yet.")
+        self._note(f"{name} is not available in this demo yet.")
 
 
 class MainWindow(QMainWindow):
-    HOME, HISTORY, SCAN, STATS = 0, 1, 2, 3
+    HOME, HISTORY, SCAN, REPORTS = 0, 1, 2, 3
     MIN_ZOOM = 0.7
     MAX_ZOOM = 2.0
     DEFAULT_ZOOM = 1.0
@@ -1762,15 +1990,15 @@ class MainWindow(QMainWindow):
         self.home_page = HomePage()
         self.history_page = HistoryPage()
         self.scan_page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-        self.stats_page = StatsPage()
+        self.reports_page = ReportsPage()
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.scan_page)
-        self.stack.addWidget(self.stats_page)
+        self.stack.addWidget(self.reports_page)
         self._page_history = [self.HOME]
         self._page_history_position = 0
-        self.home_page.stats_requested.connect(self.show_stats)
+        self.home_page.reports_requested.connect(self.show_reports)
 
         # API settings live in a popup opened from the gear icon, not on a page of their own.
         self.connector_page = ApiConnectorPage()
@@ -1778,9 +2006,8 @@ class MainWindow(QMainWindow):
         self.connector_page.disconnected.connect(self.on_llm_disconnected)
         self.connector_page.connect_failed.connect(self.on_llm_connect_failed)
         self.connector_page.api_key.textChanged.connect(self._on_api_key_edited)
-        self.settings_dialog = ApiSettingsDialog(self, self.connector_page)
+        self.api_popover = None
         self.connected_provider = None
-        self.reminder = None
 
         # Shared header: navigation controls and a centered home button.
         header = QFrame()
@@ -1846,6 +2073,11 @@ class MainWindow(QMainWindow):
         self.home_page.history_requested.connect(self.show_history)
         self.home_page.new_scan_requested.connect(self.new_scan)
         self.history_page.new_scan.connect(self.new_scan)
+        self.history_page.back_requested.connect(self.show_home)
+        self.scan_page.back_requested.connect(self.show_history)
+        self.reports_page.back_requested.connect(self.show_home)
+        self.reports_page.new_scan_requested.connect(self.new_scan)
+        self.home_page.getting_started_closed.connect(self._on_getting_started_closed)
         self.history_page.record_selected.connect(self.open_record)
         self.scan_page.finished.connect(self.add_record)
         self.scan_page.repo_chart_requested.connect(self.show_repo_burndown)
@@ -1855,18 +2087,24 @@ class MainWindow(QMainWindow):
     def show_home(self):
         self._navigate_to(self.HOME)
 
-    def show_stats(self):
-        self._navigate_to(self.STATS)
+    def show_reports(self):
+        self._navigate_to(self.REPORTS)
 
     def show_repo_burndown(self, repo):
-        """Open the Stats page on one repo's burndown (the big version of the scan page's chart)."""
-        self.stats_page.repo_box.setCurrentText(repo)
-        self.show_stats()
+        """Open the Reports page on one repo's burndown (the big version of the scan page's chart)."""
+        self.reports_page.tabs.setCurrentIndex(0)
+        self.reports_page.repo_box.setCurrentText(repo)
+        self.show_reports()
 
     def show_api_settings(self):
-        self.settings_dialog.show()
-        self.settings_dialog.raise_()
-        self.settings_dialog.activateWindow()
+        """Toggle the API settings popover under the status pill."""
+        if self.api_popover is not None and self.api_popover.isVisible():
+            self.api_popover.close()
+            return
+        if self.api_popover is None:
+            self.api_popover = ApiPopover(self, self.connector_page, self.status_pill)
+        self.api_popover.show()
+        self.api_popover.raise_()
 
     def on_llm_connected(self, provider_key, provider_label):
         self.connected_provider = (provider_key, provider_label)
@@ -1886,23 +2124,22 @@ class MainWindow(QMainWindow):
             self.on_llm_disconnected()
 
     def show_getting_started(self):
-        """Open the Getting started popup on demand, even if the launch reminder was turned off."""
-        dialog = GettingStartedDialog(self)
-        dialog.dont_show.setChecked(reminder_hidden(self.app_settings))
-        dialog.finished.connect(lambda _result, d=dialog: self._on_reminder_closed(d))
-        self.reminder = dialog
-        dialog.show()
-        return dialog
+        """Go home and show the Getting started banner, even if it was turned off."""
+        self.show_home()
+        banner = self.home_page.getting_started
+        banner.dont_show.setChecked(reminder_hidden(self.app_settings))
+        self.home_page.set_getting_started_visible(True)
+        return banner
 
     def maybe_show_reminder(self):
-        """Show the Getting started reminder on launch unless the user opted out. Returns the dialog or None."""
-        if reminder_hidden(self.app_settings):
-            return None
-        return self.show_getting_started()
+        """Show the Getting started banner on launch unless the user opted out."""
+        visible = not reminder_hidden(self.app_settings)
+        self.home_page.set_getting_started_visible(visible)
+        return visible
 
-    def _on_reminder_closed(self, dialog):
-        # Ticking the box turns the launch reminder off; unticking it (via the ? button) turns it back on.
-        set_reminder_hidden(self.app_settings, dialog.dont_show.isChecked())
+    def _on_getting_started_closed(self, dont_show):
+        # Ticking the box keeps the banner away on the next launch; unticking it (via ?) brings it back.
+        set_reminder_hidden(self.app_settings, dont_show)
 
     def show_history(self):
         self._navigate_to(self.HISTORY)
@@ -2008,7 +2245,19 @@ class MainWindow(QMainWindow):
         event.accept()
         return True
 
+    def _close_popover_on_outside_click(self, event):
+        popover = self.api_popover
+        if popover is None or not popover.isVisible() or QApplication.activePopupWidget() is not None:
+            return
+        point = event.globalPos()
+        inside_popover = popover.frameGeometry().contains(point)
+        pill_rect = self.status_pill.rect().translated(self.status_pill.mapToGlobal(QPoint(0, 0)))
+        if not inside_popover and not pill_rect.contains(point):
+            popover.close()
+
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.MouseButtonPress:
+            self._close_popover_on_outside_click(event)
         if event.type() == QEvent.KeyPress and self._handle_navigation_shortcut(event):
             return True
         if event.type() == QEvent.KeyPress and self._handle_zoom_shortcut(event):

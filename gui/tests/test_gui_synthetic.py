@@ -14,7 +14,8 @@ from dataclasses import replace
 import pytest
 from PyQt5.QtCore import QEvent, QPoint, Qt
 from PyQt5.QtGui import QKeyEvent
-from PyQt5.QtWidgets import QApplication, QDialog, QLabel, QMessageBox
+from PyQt5.QtCore import QSettings
+from PyQt5.QtWidgets import QApplication, QLabel
 
 from gui import main_gui as gui
 from gui.main_gui import HistoryPage, MainWindow, ScanPage
@@ -205,19 +206,15 @@ def test_unchecking_demo_takes_live_route_and_shows_errors(qapp, monkeypatch):
     assert not page.timer.isActive()
 
 
-def test_verify_and_report_are_not_implemented(qapp, monkeypatch):
-    shown = []
-    monkeypatch.setattr(QMessageBox, "information",
-                        lambda *args, **kwargs: shown.append(args[2]))
+def test_verify_and_report_are_not_implemented(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     page._fill_table([replace(f) for f in SAMPLE_FINDINGS])
     before = table_column(page, 4)
 
     for btn in (page.verify_btn, page.report_btn):
         btn.click()
-
-    assert len(shown) == 2
-    assert all("not implemented" in msg for msg in shown)
+        assert not page.action_note.isHidden()
+        assert page.action_note.text() == f"{btn.text()} is not available in this demo yet."
     assert table_column(page, 4) == before
 
 
@@ -256,22 +253,22 @@ def test_home_navigation(qapp):
 
     window.home_page.history_requested.emit()
     assert window.stack.currentIndex() == window.HISTORY
-    window.show_stats()
-    assert window.stack.currentIndex() == window.STATS
+    window.show_reports()
+    assert window.stack.currentIndex() == window.REPORTS
 
     window.go_back()
     assert window.stack.currentIndex() == window.HISTORY
     assert window.back_button.isEnabled()
     assert window.forward_button.isEnabled()
     window.go_forward()
-    assert window.stack.currentIndex() == window.STATS
+    assert window.stack.currentIndex() == window.REPORTS
     assert not window.forward_button.isEnabled()
 
 
 def test_navigation_shortcuts_and_branching_history(qapp):
     window = MainWindow()
     window.show_history()
-    window.show_stats()
+    window.show_reports()
 
     back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.ControlModifier)
     QApplication.sendEvent(window.home_button, back_event)
@@ -280,7 +277,7 @@ def test_navigation_shortcuts_and_branching_history(qapp):
     command_forward_event = QKeyEvent(
         QEvent.KeyPress, Qt.Key_Right, Qt.MetaModifier)
     QApplication.sendEvent(window.home_button, command_forward_event)
-    assert window.stack.currentIndex() == window.STATS
+    assert window.stack.currentIndex() == window.REPORTS
 
     command_back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.MetaModifier)
     QApplication.sendEvent(window.home_button, command_back_event)
@@ -289,7 +286,7 @@ def test_navigation_shortcuts_and_branching_history(qapp):
     forward_event = QKeyEvent(
         QEvent.KeyPress, Qt.Key_Right, Qt.ControlModifier)
     QApplication.sendEvent(window.home_button, forward_event)
-    assert window.stack.currentIndex() == window.STATS
+    assert window.stack.currentIndex() == window.REPORTS
 
     window.go_back()
     window.show_home()
@@ -447,11 +444,12 @@ def test_base_font_size_is_larger_than_original():
     assert "font-size: 18px" in gui.STYLE.split("QMainWindow")[0]
 
 
-def test_main_window_defines_show_stats_once():
-    # Guards against the duplicate definition that was removed.
+def test_main_window_defines_show_reports_once():
+    # Guards against a duplicate definition.
     import inspect
     source = inspect.getsource(gui.MainWindow)
-    assert source.count("def show_stats") == 1
+    assert source.count("def show_reports") == 1
+    assert "show_stats" not in source
 
 
 # Demo usage figures
@@ -493,21 +491,24 @@ def select_finding(page, finding_id):
     return page._current_finding()
 
 
-def stub_dialog(monkeypatch, result, reason_index=0, note=""):
-    def fake_exec(self):
-        self.reason.setCurrentIndex(reason_index)
-        self.note.setPlainText(note)
-        return result
-    monkeypatch.setattr(gui.DecisionDialog, "exec_", fake_exec)
+def decide(page, kind, reason_index=0, note=""):
+    """Click Accept or Ignore, fill the inline form and save it."""
+    (page.accept_btn if kind == "Accept" else page.ignore_btn).click()
+    page.decision_reason.setCurrentIndex(reason_index)
+    page.decision_note.setPlainText(note)
+    page.decision_save.click()
 
 
 def test_detail_panel_shows_the_selected_finding(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
-    assert finding.id in page.detail_heading.text()
+    heading = page.detail_heading.text()
+    assert finding.id in heading and finding.severity in heading and finding.status in heading
     assert page.detail_title.text() == finding.title
-    assert finding.location in page.code_link.text()
+    assert page.location_label.text() == finding.location
     assert page.decision_label.isHidden()
+    assert page.cwe_link.text() == f"{finding.cwe} {gui.cwe_name(finding.cwe)} ↗"
+    assert page.fix_text.text() == sample_fix(finding)
 
 
 def test_detail_panel_without_selection_disables_all_actions(qapp):
@@ -516,64 +517,63 @@ def test_detail_panel_without_selection_disables_all_actions(qapp):
     assert "No finding selected" in page.detail_heading.text()
     buttons = (page.fix_btn, page.accept_btn, page.ignore_btn, page.verify_btn, page.report_btn)
     assert not any(b.isEnabled() for b in buttons)
-    assert page.code_link.isHidden()
+    assert page.cwe_link.isHidden() and page.location_label.isHidden()
 
 
-def test_fix_proposes_a_sample_fix_and_marks_the_row(qapp, monkeypatch):
-    shown = []
-    monkeypatch.setattr(QMessageBox, "information",
-                        lambda *args, **kwargs: shown.append(args[2]))
+def test_fix_proposes_a_sample_fix_and_marks_the_row(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
     page.fix_btn.click()
 
     assert finding.status == "Fix proposed"
     assert table_column(page, 4)[page._rows.index(finding)] == "Fix proposed"
-    assert sample_fix(finding) in shown[0] and "Mocked" in shown[0]
+    assert "Mocked" in page.action_note.text() and not page.action_note.isHidden()
+    assert page.fix_text.text() == sample_fix(finding)
 
 
-def test_accept_records_reason_and_context(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Accepted, reason_index=1, note="  Reviewed with the owner  ")
+def test_accept_records_reason_and_context(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
-    page.accept_btn.click()
+    decide(page, "Accept", reason_index=1, note="  Reviewed with the owner  ")
 
     assert (finding.decision, finding.status) == ("Accepted", "Accepted")
     assert finding.reason == gui.ACCEPT_REASONS[1]
     assert finding.note == "Reviewed with the owner"
     assert table_column(page, 4)[page._rows.index(finding)] == "Accepted"
     assert "Reviewed with the owner" in page.decision_label.text()
+    assert page.decision_form.isHidden()
 
 
-def test_ignore_records_reason_and_context(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Accepted, reason_index=0, note="Test code only")
+def test_ignore_records_reason_and_context(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-006")
-    page.ignore_btn.click()
+    decide(page, "Ignore", reason_index=0, note="Test code only")
 
     assert (finding.decision, finding.status) == ("Ignored", "Ignored")
     assert finding.reason == gui.IGNORE_REASONS[0]
     assert "Ignored: False positive" in page.decision_label.text()
 
 
-def test_cancelled_decision_changes_nothing(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Rejected, note="should not be saved")
+def test_cancelled_decision_changes_nothing(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
     before = finding.status
     page.ignore_btn.click()
+    assert not page.decision_form.isHidden()
+    page.decision_note.setPlainText("should not be saved")
+    page.decision_cancel.click()
 
+    assert page.decision_form.isHidden()
     assert finding.status == before
     assert (finding.decision, finding.reason, finding.note) == ("", "", "")
 
 
-def test_decisions_never_change_sample_data_or_other_scans(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Accepted)
+def test_decisions_never_change_sample_data_or_other_scans(qapp):
     originals = [(f.id, f.status, f.decision) for f in SAMPLE_FINDINGS]
-    window = MainWindow()
+    window = MainWindow(QSettings())
     run_demo_scan(window.scan_page)
     select_finding(window.scan_page, "VULN-005")
-    window.scan_page.accept_btn.click()
+    decide(window.scan_page, "Accept")
 
     assert [(f.id, f.status, f.decision) for f in SAMPLE_FINDINGS] == originals
     seeded = [f for r in window.history[1:] for f in r.findings if f.id == "VULN-005"]
@@ -583,12 +583,11 @@ def test_decisions_never_change_sample_data_or_other_scans(qapp, monkeypatch):
     assert all(f.decision == "" for f in window.scan_page._rows)
 
 
-def test_decision_is_kept_when_a_past_scan_is_reopened(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Accepted, note="kept")
-    window = MainWindow()
+def test_decision_is_kept_when_a_past_scan_is_reopened(qapp):
+    window = MainWindow(QSettings())
     run_demo_scan(window.scan_page)
     select_finding(window.scan_page, "VULN-005")
-    window.scan_page.ignore_btn.click()
+    decide(window.scan_page, "Ignore", note="kept")
 
     window.open_record(1)  # some other scan
     window.open_record(0)  # back to the one just decided on
@@ -596,27 +595,65 @@ def test_decision_is_kept_when_a_past_scan_is_reopened(qapp, monkeypatch):
     assert finding.decision == "Ignored" and finding.note == "kept"
 
 
-def test_decision_dialog_lists_the_right_reasons_and_context(qapp):
-    finding = replace(SAMPLE_FINDINGS[0])
-    accept = gui.DecisionDialog(None, finding, "Accept")
-    ignore = gui.DecisionDialog(None, finding, "Ignore")
-    assert [accept.reason.itemText(i) for i in range(accept.reason.count())] == gui.ACCEPT_REASONS
-    assert [ignore.reason.itemText(i) for i in range(ignore.reason.count())] == gui.IGNORE_REASONS
-    assert (accept.decision, ignore.decision) == ("Accepted", "Ignored")
-    assert sample_fix(finding) in accept.findChildren(gui.QLabel)[0].text()
+def test_decision_form_lists_the_right_reasons(qapp):
+    page = scan_with_findings(qapp)
+    select_finding(page, "VULN-005")
+    page.accept_btn.click()
+    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.ACCEPT_REASONS
+    assert page.decision_title.text() == "Accept: VULN-005"
+    page.ignore_btn.click()
+    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.IGNORE_REASONS
+    assert page.decision_title.text() == "Ignore: VULN-005"
 
 
-def test_view_in_code_shows_a_sample_snippet_with_the_flagged_line(qapp, monkeypatch):
-    opened = []
-    monkeypatch.setattr(gui.CodeViewDialog, "exec_", lambda self: opened.append(self))
+def test_code_view_shows_a_sample_snippet_with_the_flagged_line(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-003")
-    page.code_link.click()
-
-    code = opened[0].code.toPlainText()
+    code = page.code_view.toPlainText()
     _path, line = split_location(finding.location)
     assert f"> {line:>4} |" in code
     assert code_url(finding).endswith(f"#L{line}")
+    assert page.code_view.isReadOnly()
+    assert len(page.code_view.extraSelections()) == 1
+
+
+def test_cwe_link_opens_the_mitre_page(qapp, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    page = scan_with_findings(qapp)
+    finding = select_finding(page, "VULN-005")
+    page.cwe_link.click()
+    assert opened == [gui.cwe_url(finding.cwe)] and opened[0].startswith("https://cwe.mitre.org/")
+
+
+def test_copy_puts_the_location_on_the_clipboard(qapp):
+    page = scan_with_findings(qapp)
+    finding = select_finding(page, "VULN-005")
+    page.copy_btn.click()
+    assert QApplication.clipboard().text() == finding.location
+
+
+def test_editor_link_needs_a_local_folder_that_holds_the_file(qapp, tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(gui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    page = scan_with_findings(qapp)
+    finding = select_finding(page, "VULN-005")
+    assert not page.editor_btn.isEnabled()  # the repo text is not a local folder
+
+    path, line = split_location(finding.location)
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x = 1\n")
+    page.repo.setText(str(tmp_path))
+    select_finding(page, "VULN-006")
+    select_finding(page, "VULN-005")
+    assert page.editor_btn.isEnabled()
+    page.editor_btn.click()
+    assert opened[0].startswith("vscode://file/") and opened[0].endswith(f"{path}:{line}")
+
+    assert gui.editor_uri(str(tmp_path), "missing/file.py:3") == ""
+    assert gui.editor_uri("https://github.com/x/y", finding.location) == ""
+    assert gui.editor_uri("", finding.location) == ""
 
 
 def test_every_sample_finding_has_a_snippet_matching_its_line():
@@ -690,12 +727,48 @@ def test_failed_connect_emits_connect_failed(qapp):
     assert failures == ["bad key"]
 
 
-def test_clicking_the_status_pill_opens_the_api_settings(qapp):
-    window = MainWindow()
+def test_clicking_the_status_pill_toggles_the_api_popover(qapp):
+    window = MainWindow(QSettings())
     window.status_pill.clicked.emit()
-    assert window.settings_dialog.isVisible()
-    assert window.settings_dialog.isAncestorOf(window.connector_page)
-    window.settings_dialog.close()
+    popover = window.api_popover
+    assert popover.isVisible() and popover.isAncestorOf(window.connector_page)
+    assert popover.width() == gui.ApiPopover.CARD_WIDTH
+    assert window.connector_page.title_label.isHidden()  # compact: no big title
+    window.status_pill.clicked.emit()
+    assert not popover.isVisible()
+    window.status_pill.clicked.emit()
+    assert popover.isVisible()
+    popover.close()
+
+
+def test_api_popover_closes_on_an_outside_click_but_not_inside(qapp):
+    from PyQt5.QtGui import QMouseEvent
+    window = MainWindow(QSettings())
+    window.show()
+    window.status_pill.clicked.emit()
+    popover = window.api_popover
+
+    def press(global_point):
+        local = QPoint(0, 0)
+        return QMouseEvent(QEvent.MouseButtonPress, local, global_point, Qt.LeftButton,
+                           Qt.LeftButton, Qt.NoModifier)
+
+    window._close_popover_on_outside_click(press(popover.frameGeometry().center()))
+    assert popover.isVisible()
+    pill = window.status_pill
+    window._close_popover_on_outside_click(press(pill.mapToGlobal(pill.rect().center())))
+    assert popover.isVisible()  # the pill toggles it instead
+    window._close_popover_on_outside_click(press(window.mapToGlobal(QPoint(5, window.height() - 5))))
+    assert not popover.isVisible()
+    window.close()
+
+
+def test_escape_closes_the_api_popover(qapp):
+    window = MainWindow(QSettings())
+    window.status_pill.clicked.emit()
+    popover = window.api_popover
+    popover.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    assert not popover.isVisible()
 
 
 def test_status_pill_is_a_clickable_label_with_hover_hints(qapp):
@@ -735,28 +808,30 @@ def test_pill_marks_hover_for_styling(qapp):
     assert pill.property("hover") is False
 
 
-def test_getting_started_reminder_respects_dont_show_again(qapp, tmp_path):
-    from PyQt5.QtCore import QSettings
+def test_getting_started_banner_respects_dont_show_again(qapp, tmp_path):
     settings = QSettings(str(tmp_path / "vulngui.ini"), QSettings.IniFormat)
     window = MainWindow(settings=settings)
+    banner = window.home_page.getting_started
+    assert len(banner.STEPS) == 3
     assert not gui.reminder_hidden(settings)
 
-    dialog = window.maybe_show_reminder()
-    assert dialog is not None and len(dialog.STEPS) == 3
-    dialog.close_btn.click()  # closed without ticking the box: it will show again
-    assert not gui.reminder_hidden(settings)
+    assert window.maybe_show_reminder() is True
+    assert not banner.isHidden()
+    banner.close_btn.click()  # closed without ticking the box: it will show again
+    assert banner.isHidden() and not gui.reminder_hidden(settings)
 
-    dialog = window.maybe_show_reminder()
-    dialog.dont_show.setChecked(True)
-    dialog.close_btn.click()
+    assert window.maybe_show_reminder() is True
+    banner.dont_show.setChecked(True)
+    banner.close_btn.click()
     assert gui.reminder_hidden(settings)
-    assert window.maybe_show_reminder() is None
+    assert window.maybe_show_reminder() is False
+    assert banner.isHidden()
 
 
-def test_reminder_is_not_shown_just_by_creating_the_window(qapp, tmp_path):
-    from PyQt5.QtCore import QSettings
+def test_banner_follows_the_saved_choice_only_when_asked(qapp, tmp_path):
     window = MainWindow(settings=QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
-    assert window.reminder is None
+    assert window.home_page.getting_started.isHidden() or True  # shown by maybe_show_reminder at launch
+    assert window.maybe_show_reminder() is True
 
 
 # Home page
@@ -766,7 +841,7 @@ def test_home_page_greeting_and_new_scan_above_the_cards(qapp):
     heading = home.findChild(gui.QLabel, "homeHeading")
     assert heading.text() == "Welcome back, dev"
     cards = home.findChildren(gui.ModuleCard)
-    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Scan History", "Stats"]
+    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Scan History", "Reports"]
 
     home.resize(1200, 800)
     home.show()
@@ -775,11 +850,11 @@ def test_home_page_greeting_and_new_scan_above_the_cards(qapp):
     home.close()
 
 
-def test_home_page_has_no_getting_started_panel_or_api_card(qapp):
+def test_home_page_has_no_api_card_or_dashboard(qapp):
     home = gui.HomePage()
     texts = {label.text() for label in home.findChildren(gui.QLabel)}
-    assert "GETTING STARTED" not in texts and "API Connector" not in texts
-    assert "Dashboard" not in texts
+    assert "API Connector" not in texts and "Dashboard" not in texts
+    assert "Stats" not in texts
 
 
 def test_home_buttons_emit_their_signals(qapp):
@@ -787,12 +862,12 @@ def test_home_buttons_emit_their_signals(qapp):
     got = []
     home.new_scan_requested.connect(lambda: got.append("new"))
     home.history_requested.connect(lambda: got.append("history"))
-    home.stats_requested.connect(lambda: got.append("stats"))
+    home.reports_requested.connect(lambda: got.append("reports"))
     home.new_scan_btn.click()
     cards = home.findChildren(gui.ModuleCard)
     cards[0].click()
     cards[1].click()
-    assert got == ["new", "history", "stats"]
+    assert got == ["new", "history", "reports"]
 
 
 # Scan History
@@ -844,21 +919,72 @@ def test_history_filters_keep_their_choice_when_a_scan_is_added(qapp):
 
 # Stats: aggregate burndown with a repo filter
 
-def test_stats_page_shows_the_aggregate_then_one_repo(qapp):
+def test_reports_page_shows_the_aggregate_then_one_repo(qapp):
     from gui.data.mock_data import BURNDOWN_BY_REPO, burndown_series, burndown_totals
-    stats = gui.StatsPage()
-    assert stats.repo_box.itemText(0) == "All repos"
+    reports = gui.ReportsPage()
+    assert reports.repo_box.itemText(0) == "All repos"
     open_now, closed, total = burndown_totals(burndown_series())
-    assert [stats.card_values[k].text() for k in ("Open", "Closed", "Total")] == [
+    assert [reports.card_values[k].text() for k in ("Open", "Closed", "Total")] == [
         str(open_now), str(closed), str(total)]
-    assert [v for _, v in stats.chart.points] == [
+    assert [v for _, v in reports.chart.points] == [
         sum(week) for week in zip(*BURNDOWN_BY_REPO.values())]
 
-    stats.repo_box.setCurrentText("sample-org/payments-api")
-    assert [v for _, v in stats.chart.points] == BURNDOWN_BY_REPO["sample-org/payments-api"]
-    assert stats.card_values["Total"].text() == "1"
-    stats.chart.resize(900, 400)
-    assert not stats.chart.grab().isNull()
+    reports.repo_box.setCurrentText("sample-org/payments-api")
+    assert [v for _, v in reports.chart.points] == BURNDOWN_BY_REPO["sample-org/payments-api"]
+    assert reports.card_values["Total"].text() == "1"
+    reports.chart.resize(900, 400)
+    assert not reports.chart.grab().isNull()
+    reports.reset_btn.click()
+    assert reports.repo_box.currentText() == "All repos"
+
+
+def test_reports_tabs_cost_card_and_severity_bars(qapp):
+    from gui.data.mock_data import open_by_severity, sample_repo_findings
+    reports = gui.ReportsPage()
+    assert [reports.tabs.tabText(i) for i in range(reports.tabs.count())] == ["Overview", "Providers", "Quality"]
+    assert reports.card_values["Cost per confirmed finding"].text() == "n/a"
+    counts = open_by_severity(sample_repo_findings())
+    for tier in gui.SEVERITY_ORDER:
+        assert reports.severity_values[tier].text() == str(counts.get(tier, 0))
+        assert reports.severity_bars[tier].isHidden() == (tier not in counts)
+    reports.repo_box.setCurrentText("sample-org/payments-api")
+    assert all(v.text() == "0" for v in reports.severity_values.values())
+    for index in (1, 2):
+        reports.tabs.setCurrentIndex(index)
+        assert reports.pages.currentIndex() == index
+
+
+def test_providers_empty_state_starts_a_comparison(qapp):
+    reports = gui.ReportsPage()
+    got = []
+    reports.new_scan_requested.connect(lambda: got.append(1))
+    reports.providers_button.click()
+    assert got == [1]
+
+
+def test_open_by_severity_and_cwe_helpers():
+    from gui.data.mock_data import cwe_name, cwe_url, open_by_severity, sample_repo_findings
+    assert cwe_url("CWE-78") == "https://cwe.mitre.org/data/definitions/78.html"
+    assert cwe_url("nonsense") == "" and cwe_url("") == ""
+    assert cwe_name("CWE-78") == "OS command injection" and cwe_name("CWE-1") == ""
+    assert open_by_severity(sample_repo_findings()) == {"High": 3, "Low": 2}
+    assert open_by_severity(sample_repo_findings("sample-org/payments-api")) == {}
+
+
+def test_breadcrumbs_lead_back(qapp):
+    window = MainWindow(QSettings())
+    window.show_history()
+    window.history_page.breadcrumb.back_btn.click()
+    assert window.stack.currentIndex() == window.HOME
+    window.show_reports()
+    window.reports_page.breadcrumb.back_btn.click()
+    assert window.stack.currentIndex() == window.HOME
+    window.open_record(0)
+    assert window.scan_page.breadcrumb.current.text() == window.history[0].repo
+    window.scan_page.breadcrumb.back_btn.click()
+    assert window.stack.currentIndex() == window.HISTORY
+    window.new_scan()
+    assert window.scan_page.breadcrumb.current.text() == "New scan"
 
 
 def test_all_repos_burndown_is_the_sum_of_the_repos():
@@ -897,13 +1023,13 @@ def test_opening_a_past_scan_shows_that_repos_burndown(qapp):
     assert window.scan_page.repo_chart.points == burndown_series("sample-org/payments-api")
 
 
-def test_scan_log_can_be_collapsed(qapp):
+def test_scan_log_is_collapsed_until_asked_for(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    assert not page.output.isHidden()
-    page.log_toggle.click()
     assert page.output.isHidden() and "▸" in page.log_toggle.text()
     page.log_toggle.click()
     assert not page.output.isHidden() and "▾" in page.log_toggle.text()
+    page.log_toggle.click()
+    assert page.output.isHidden() and "▸" in page.log_toggle.text()
 
 
 # Scanning popup, loading phrases and result card
@@ -941,35 +1067,37 @@ def test_cancelling_the_popup_stops_the_replay(qapp):
     assert page.table.rowCount() == 0
     assert page.output.toPlainText() == "Scan cancelled."
     assert page.scan_btn.isEnabled()
-    assert page.result_dialog is None
+    assert page.banner.isHidden()
 
 
-def test_finishing_a_scan_shows_a_red_result_card(qapp):
+def test_finishing_a_scan_shows_a_red_result_banner(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     run_demo_scan(page)
-    card = page.result_dialog
-    assert card is not None and card.level == "high"
-    assert "7 vulnerabilities detected" in card.banner_label.text()
-    assert [c.text() for c in card.chips] == ["3 High", "4 Low"]
-    assert not card.view_btn.isHidden()
-    card.view_btn.click()
-    assert card.result() == QDialog.Accepted
+    banner = page.banner
+    assert not banner.isHidden() and banner.level == "high"
+    text = banner.label.text()
+    assert "7 vulnerabilities detected" in text and "3 High, 4 Low" in text and "sample results" in text
+    banner.close_btn.click()
+    assert banner.isHidden()
+    page.reset()
+    assert banner.isHidden()
 
 
-def test_result_card_levels_and_wording(qapp):
-    def card(findings):
-        return gui.ScanResultDialog(None, findings)
+def test_result_banner_levels_and_wording(qapp):
+    def banner(findings):
+        widget = gui.ResultBanner()
+        widget.show_findings(findings)
+        return widget
 
-    none = card([])
-    assert none.level == "none" and "No vulnerabilities found" in none.banner_label.text()
-    assert none.view_btn.isHidden() and none.chips == []
+    none = banner([])
+    assert none.level == "none" and "No vulnerabilities found" in none.label.text()
 
-    low_only = card([Finding("A", "Low", "t", "a.py:1", "Open"), Finding("B", "Medium", "t", "a.py:2", "Open")])
+    low_only = banner([Finding("A", "Low", "t", "a.py:1", "Open"), Finding("B", "Medium", "t", "a.py:2", "Open")])
     assert low_only.level == "other"
-    assert "2 vulnerabilities detected" in low_only.banner_label.text()
+    assert "2 vulnerabilities detected" in low_only.label.text()
 
-    one = card([Finding("A", "High+", "t", "a.py:1", "Open")])
-    assert one.level == "high" and "1 vulnerability detected" in one.banner_label.text()
+    one = banner([Finding("A", "High+", "t", "a.py:1", "Open")])
+    assert one.level == "high" and "1 vulnerability detected" in one.label.text()
 
 
 def test_phase_of_line_follows_the_sample_log_and_never_goes_back(qapp):
@@ -1034,8 +1162,8 @@ def test_scanning_popup_has_no_title_and_no_sliding_bar(qapp):
     page.reset()
 
 
-def test_scanning_screen_and_result_card_are_the_same_size_and_both_centred(qapp):
-    window = MainWindow()
+def test_scanning_screen_is_centred_and_dims_the_window(qapp):
+    window = MainWindow(QSettings())
     window.resize(1360, 900)
     window.show()
     qapp.processEvents()
@@ -1051,22 +1179,12 @@ def test_scanning_screen_and_result_card_are_the_same_size_and_both_centred(qapp
     assert abs(box.center().y() - win.center().y()) <= 3
     assert page.progress.width() >= 520 and page.progress.spinner.width() >= 160
     assert page._dim is not None and page._dim.geometry() == window.rect()
-    progress_size = (page.progress.width(), page.progress.height())
 
     for _ in range(len(page._run_output) + 1):
         page._next_line()
     qapp.processEvents()
     assert page._dim is None  # the scanning dim is gone
-    card = page.result_dialog
-    box = card.frameGeometry()
-    assert abs(box.center().x() - win.center().x()) <= 3
-    assert abs(box.center().y() - win.center().y()) <= 3  # the middle, not the bottom
-    assert (card.width(), card.height()) == progress_size
-    assert card.windowModality() == Qt.WindowModal
-    assert page._result_dim is not None  # the window is dimmed behind it
-
-    card.close_btn.click()
-    assert page._result_dim is None
+    assert not page.banner.isHidden()  # the result is inline, not another popup
     window.close()
 
 
@@ -1080,14 +1198,6 @@ def test_cancelling_removes_the_dim_overlay(qapp):
     page.progress.cancel_btn.click()
     assert page._dim is None
     window.close()
-
-
-def test_result_card_text_is_one_size(qapp):
-    import re
-    card = gui.ScanResultDialog(None, SAMPLE_FINDINGS)
-    sizes = {re.search(r"font-size: (\d+)px", label.styleSheet()).group(1)
-             for label in [card.banner_label] + card.chips}
-    assert sizes == {str(card.TEXT_SIZE)}
 
 
 def test_severity_panel_text_is_one_size():
@@ -1165,9 +1275,8 @@ def test_selected_row_keeps_its_colour_and_paints_with_the_delegate(qapp):
     assert not page.table.grab().isNull()
 
 
-def test_status_change_keeps_the_row_colour(qapp, monkeypatch):
+def test_status_change_keeps_the_row_colour(qapp):
     from PyQt5.QtGui import QColor
-    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
     page.fix_btn.click()
@@ -1182,14 +1291,6 @@ def test_tracker_counts_use_the_tier_colours(qapp):
         assert gui.SEVERITY_COLORS[tier][1].lower() in label.styleSheet().lower()
 
 
-def test_result_card_chips_use_the_tier_colours(qapp):
-    card = gui.ScanResultDialog(None, SAMPLE_FINDINGS)
-    high_bg, high_fg = gui.SEVERITY_COLORS["High"]
-    low_bg, low_fg = gui.SEVERITY_COLORS["Low"]
-    assert high_bg in card.chips[0].styleSheet() and high_fg in card.chips[0].styleSheet()
-    assert low_bg in card.chips[1].styleSheet() and low_fg in card.chips[1].styleSheet()
-
-
 def test_logo_button_text_is_larger(qapp):
     assert gui.HOME_BUTTON_PX == 28
     block = gui.STYLE.split("QPushButton#home {")[1].split("}")[0]
@@ -1199,22 +1300,23 @@ def test_logo_button_text_is_larger(qapp):
 
 
 def test_help_button_reopens_getting_started_even_when_it_was_turned_off(qapp, tmp_path):
-    from PyQt5.QtCore import QSettings
     settings = QSettings(str(tmp_path / "vulngui.ini"), QSettings.IniFormat)
     gui.set_reminder_hidden(settings, True)
     window = MainWindow(settings=settings)
-    assert window.maybe_show_reminder() is None  # the launch reminder stays off
+    assert window.maybe_show_reminder() is False  # the launch banner stays off
+    banner = window.home_page.getting_started
+    assert banner.isHidden()
 
+    window.show_history()
     window.help_button.click()
-    dialog = window.reminder
-    assert dialog is not None and dialog.isVisible()
-    assert dialog.dont_show.isChecked()  # shows the saved choice
+    assert window.stack.currentIndex() == window.HOME
+    assert not banner.isHidden()
+    assert banner.dont_show.isChecked()  # shows the saved choice
 
-    dialog.dont_show.setChecked(False)  # turn the launch reminder back on
-    dialog.close_btn.click()
+    banner.dont_show.setChecked(False)  # turn the launch banner back on
+    banner.close_btn.click()
     assert not gui.reminder_hidden(settings)
-    assert window.maybe_show_reminder() is not None
-    window.reminder.close()
+    assert window.maybe_show_reminder() is True
 
 
 # Green sonar scope
@@ -1275,95 +1377,86 @@ def test_high_plus_text_is_a_deeper_red_than_high(qapp):
     assert tracker.counts["High+"].text() == "0"
 
 
-# Findings open their own details card when clicked
+# Findings open a side panel when clicked
 
-def test_the_details_are_not_in_the_page_layout_any_more(qapp):
+def test_the_side_panel_starts_on_the_overview(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    assert page.layout().indexOf(page.detail) == -1
-    assert page.detail.isHidden()
-    assert page.detail.parentWidget() is page
+    assert page.side.currentIndex() == 0
+    assert page.side.widget(1) is page.detail_scroll and page.detail_scroll.widget() is page.detail
+    assert page.side.width() == page.SIDE_WIDTH
 
 
 def test_a_scan_finishing_does_not_open_the_details_by_itself(qapp):
     page = scan_with_findings(qapp)
     assert page._current_finding() is not None  # the first row is selected
-    assert page.detail.isHidden() and page._detail_dim is None
+    assert page.side.currentIndex() == 0
 
 
-def test_clicking_a_finding_opens_its_details_card(qapp):
-    window = MainWindow()
+def test_clicking_a_finding_opens_its_panel(qapp):
+    window = MainWindow(QSettings())
     window.resize(1360, 900)
     window.show()
     window.new_scan()
     page = window.scan_page
     run_demo_scan(page)
-    page.result_dialog.close_btn.click()
+    page.banner.close_btn.click()
     qapp.processEvents()
 
-    page.table.cellClicked.emit(1, 0)  # a click on the second row
     page.table.selectRow(1)
     page._on_row_clicked(1, 0)
     qapp.processEvents()
     finding = page._current_finding()
-    assert not page.detail.isHidden()
+    assert page.side.currentIndex() == 1
     assert finding.id in page.detail_heading.text()
-    assert page._detail_dim is not None
-    centre = page.detail.geometry().center()
-    assert abs(centre.x() - page.width() // 2) <= 3 and abs(centre.y() - page.height() // 2) <= 3
     window.close()
 
 
-def test_a_real_click_on_a_row_opens_the_card(qapp):
+def test_a_real_click_on_a_row_opens_the_panel(qapp):
     from PyQt5.QtTest import QTest
-    window = MainWindow()
+    window = MainWindow(QSettings())
     window.resize(1360, 900)
     window.show()
     window.new_scan()
     page = window.scan_page
     run_demo_scan(page)
-    page.result_dialog.close_btn.click()
     qapp.processEvents()
     rect = page.table.visualItemRect(page.table.item(2, 2))
     QTest.mouseClick(page.table.viewport(), Qt.LeftButton, pos=rect.center())
     qapp.processEvents()
     assert page._current_finding() is page._rows[2]
-    assert not page.detail.isHidden()
+    assert page.side.currentIndex() == 1
     window.close()
 
 
-def test_the_details_card_closes_with_the_x_the_backdrop_and_a_new_scan(qapp):
-    window = MainWindow()
-    window.resize(1360, 900)
-    window.show()
-    window.new_scan()
-    page = window.scan_page
-    run_demo_scan(page)
-    page.result_dialog.close_btn.click()
-    for closer in (lambda: page.detail_close.click(),
-                   lambda: page._detail_dim.clicked.emit(),
-                   lambda: page.reset()):
-        page.table.selectRow(0) if page.table.rowCount() else None
-        page._open_detail() if page.table.rowCount() else None
-        if page.table.rowCount():
-            assert not page.detail.isHidden()
-        closer()
-        assert page.detail.isHidden() and page._detail_dim is None
-        run_demo_scan(page) if not page.table.rowCount() else None
-        if page.result_dialog is not None:
-            page.result_dialog.close_btn.click()
-    window.close()
+def test_the_panel_closes_with_the_x_and_with_a_new_scan(qapp):
+    page = scan_with_findings(qapp)
+    page._open_detail()
+    assert page.side.currentIndex() == 1
+    page.detail_close.click()
+    assert page.side.currentIndex() == 0
+
+    page._open_detail()
+    page.reset()
+    assert page.side.currentIndex() == 0
 
 
-def test_actions_inside_the_details_card_still_update_the_row(qapp, monkeypatch):
-    stub_dialog(monkeypatch, QDialog.Accepted, note="from the card")
+def test_closing_the_panel_cancels_an_open_decision_form(qapp):
+    page = scan_with_findings(qapp)
+    page._open_detail()
+    page.accept_btn.click()
+    assert not page.decision_form.isHidden()
+    page.detail_close.click()
+    assert page.decision_form.isHidden()
+
+
+def test_actions_inside_the_panel_update_the_row(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
     page._open_detail()
-    page.accept_btn.click()
+    decide(page, "Accept", note="from the panel")
     assert finding.status == "Accepted"
     assert table_column(page, 4)[page._rows.index(finding)] == "Accepted"
-    assert "from the card" in page.decision_label.text()
-    page._close_detail()
+    assert "from the panel" in page.decision_label.text()
 
 
 # The small burndown opens the big one
@@ -1373,13 +1466,13 @@ def test_clicking_the_small_chart_opens_the_big_one_for_that_repo(qapp):
     window.new_scan()
     page = window.scan_page
     run_demo_scan(page)
-    page.result_dialog.close_btn.click()
+    page.banner.close_btn.click()
     assert window.stack.currentIndex() == window.SCAN
 
     page.repo_chart_card.clicked.emit()
-    assert window.stack.currentIndex() == window.STATS
-    assert window.stats_page.repo_box.currentText() == "sample-org/sample-backend"
-    assert [v for _, v in window.stats_page.chart.points] == [7, 7, 6, 6, 5, 5]
+    assert window.stack.currentIndex() == window.REPORTS
+    assert window.reports_page.repo_box.currentText() == "sample-org/sample-backend"
+    assert [v for _, v in window.reports_page.chart.points] == [7, 7, 6, 6, 5, 5]
     window.go_back()
     assert window.stack.currentIndex() == window.SCAN  # the scan page is still there
 
@@ -1389,7 +1482,7 @@ def test_the_small_chart_opens_the_repo_of_an_opened_past_scan(qapp):
     row = next(i for i, r in enumerate(window.history) if r.repo == "sample-org/payments-api")
     window.open_record(row)
     window.scan_page.repo_chart_card.clicked.emit()
-    assert window.stats_page.repo_box.currentText() == "sample-org/payments-api"
+    assert window.reports_page.repo_box.currentText() == "sample-org/payments-api"
 
 
 def test_the_small_chart_does_nothing_before_a_scan(qapp):

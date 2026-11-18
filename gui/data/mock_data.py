@@ -5,6 +5,7 @@ severity mix, phase order and agent counts. Repository, file and field names are
 generic placeholders. Statuses beyond Open/Verified, the extra history
 rows and the log line wording are synthetic, so the table shows every status.
 """
+import re
 from dataclasses import dataclass
 
 REPO_URL = "https://github.com/sample-org/sample-backend"
@@ -312,3 +313,47 @@ def result_level(findings):
     if not findings:
         return "none"
     return "high" if any(f.severity in ("High+", "High") for f in findings) else "other"
+
+
+# CWE names for the weaknesses in the sample findings, and the page that explains each one.
+CWE_NAMES = {
+    "CWE-78": "OS command injection",
+    "CWE-22": "Path traversal",
+    "CWE-400": "Uncontrolled resource consumption",
+    "CWE-494": "Download of code without integrity check",
+    "CWE-798": "Hard-coded credentials",
+}
+
+
+def cwe_name(cwe):
+    return CWE_NAMES.get(cwe, "")
+
+
+def cwe_url(cwe):
+    """The MITRE page for 'CWE-78', or '' if the id is not of that form."""
+    match = re.fullmatch(r"CWE-(\d+)", cwe or "")
+    return f"https://cwe.mitre.org/data/definitions/{match.group(1)}.html" if match else ""
+
+
+# A finding is closed once its fix is merged or verified, or a reviewer accepted or ignored it.
+CLOSED_STATUSES = ("Merged", "Verified", "Accepted", "Ignored")
+
+
+def is_open(finding):
+    return finding.status not in CLOSED_STATUSES
+
+
+def open_by_severity(findings):
+    """{tier: number of open findings} for the tiers that have any, highest first."""
+    return {tier: n for tier in SEVERITY_ORDER
+            if (n := sum(f.severity == tier and is_open(f) for f in findings))}
+
+
+def sample_repo_findings(repo=ALL_REPOS):
+    """The sample findings of one repo's latest sample scan, or of every repo."""
+    latest = {}
+    for record in SEED_HISTORY:
+        latest.setdefault(record.repo, record.findings)
+    if repo == ALL_REPOS:
+        return [f for findings in latest.values() for f in findings]
+    return list(latest.get(repo, []))
