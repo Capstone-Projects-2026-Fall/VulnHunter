@@ -665,14 +665,9 @@ class ReportsPage(QWidget):
         self.repo_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.repo_box.setMinimumContentsLength(24)
         self.repo_box.currentIndexChanged.connect(self._update)
-        self.reset_btn = QPushButton("Reset to default")
-        self.reset_btn.setObjectName("link")
-        self.reset_btn.setCursor(Qt.PointingHandCursor)
-        self.reset_btn.clicked.connect(lambda: self.repo_box.setCurrentIndex(0))
         filters = QHBoxLayout()
         filters.addWidget(self.repo_box)
         filters.addStretch()
-        filters.addWidget(self.reset_btn)
 
         self.strip = QGridLayout()
         self.strip.setSpacing(12)
@@ -829,10 +824,6 @@ class HistoryPage(QWidget):
         self.model_filter.setToolTip("Show scans run with one model.")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search scans")
-        self.reset_btn = QPushButton("Reset to default")
-        self.reset_btn.setObjectName("link")
-        self.reset_btn.setCursor(Qt.PointingHandCursor)
-        self.reset_btn.clicked.connect(self.reset_filters)
         self.repo_filter.currentIndexChanged.connect(self._render)
         self.model_filter.currentIndexChanged.connect(self._render)
         self.search.textChanged.connect(self._render)
@@ -841,7 +832,6 @@ class HistoryPage(QWidget):
         toolbar.addWidget(self.search, 1)
         toolbar.addWidget(self.repo_filter)
         toolbar.addWidget(self.model_filter)
-        toolbar.addWidget(self.reset_btn)
 
         self.summary = QLabel()
         self.summary.setObjectName("muted")
@@ -872,11 +862,6 @@ class HistoryPage(QWidget):
         layout.addLayout(toolbar)
         layout.addWidget(self.summary)
         layout.addWidget(self.table, 1)
-
-    def reset_filters(self):
-        self.search.clear()
-        self.repo_filter.setCurrentIndex(0)
-        self.model_filter.setCurrentIndex(0)
 
     def refresh(self, records):
         self._records = list(records)
@@ -1080,10 +1065,6 @@ class FindingsPage(QWidget):
         self.severity_filter.addItems(SEVERITY_ORDER)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search findings")
-        self.reset_btn = QPushButton("Reset to default")
-        self.reset_btn.setObjectName("link")
-        self.reset_btn.setCursor(Qt.PointingHandCursor)
-        self.reset_btn.clicked.connect(self.reset_filters)
         for box in (self.repo_filter, self.severity_filter):
             box.currentIndexChanged.connect(self._render)
         self.search.textChanged.connect(self._render)
@@ -1092,7 +1073,6 @@ class FindingsPage(QWidget):
         toolbar.addWidget(self.search, 1)
         toolbar.addWidget(self.repo_filter)
         toolbar.addWidget(self.severity_filter)
-        toolbar.addWidget(self.reset_btn)
 
         # Status chips: they filter the list and show how many findings are in each state.
         self.chips = {}
@@ -1161,12 +1141,6 @@ class FindingsPage(QWidget):
         for name, chip in self.chips.items():
             chip.setChecked(name == (group or "All"))
         self._render()
-
-    def reset_filters(self):
-        for box in (self.repo_filter, self.severity_filter):
-            box.setCurrentIndex(0)
-        self.search.clear()
-        self.set_status_filter(None)
 
     def _toggle_sort(self, column):
         field = self.SORT_FIELDS[column]

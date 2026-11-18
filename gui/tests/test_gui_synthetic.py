@@ -1005,8 +1005,6 @@ def test_reports_page_shows_the_aggregate_then_one_repo(qapp):
     assert reports.card_values["Total"].text() == "1"
     reports.chart.resize(900, 400)
     assert not reports.chart.grab().isNull()
-    reports.reset_btn.click()
-    assert reports.repo_box.currentText() == "All repos"
 
 
 def test_reports_tabs_cost_card_and_severity_bars(qapp):
@@ -1625,20 +1623,22 @@ def test_board_filters_and_chips_narrow_the_list(qapp):
     assert 0 < page.table.rowCount() < total
     assert all(page.table.item(r, 1).text() == "Low" for r in range(page.table.rowCount()))
     assert page.chips["All"].text() == f"All {page.table.rowCount()}"  # the counts follow the other filters
-    page.reset_btn.click()
-    assert page.table.rowCount() == total and page.search.text() == ""
+    page.severity_filter.setCurrentIndex(0)
+    assert page.table.rowCount() == total
 
     page.repo_filter.setCurrentText("sample-org/payments-api")
     assert {page.table.item(r, 3).text() for r in range(page.table.rowCount())} == {"sample-org/payments-api"}
-    page.reset_filters()
+    page.repo_filter.setCurrentIndex(0)
 
     page.chips["Open"].click()
     assert page._status == "Open" and page.chips["Open"].isChecked() and not page.chips["All"].isChecked()
     assert all(gui.status_group(f.status) == "Open" for _i, _r, f in page._shown)
     page.search.setText("no such finding anywhere")
     assert page.table.rowCount() == 0 and not page.empty.isHidden()
-    page.reset_filters()
+    page.search.clear()
+    page.chips["All"].click()
     assert page.empty.isHidden() and page._status is None and page.chips["All"].isChecked()
+    assert not hasattr(page, "reset_btn")
 
 
 def test_findings_page_has_two_tabs_and_holds_the_scan_runs(qapp):
@@ -1785,12 +1785,8 @@ def test_the_scan_runs_toolbar_puts_search_first_then_filters(qapp):
     page = HistoryPage()
     toolbar = page.layout().itemAt(0).layout()
     order = [toolbar.itemAt(i).widget() for i in range(toolbar.count())]
-    assert order == [page.search, page.repo_filter, page.model_filter, page.reset_btn]
-    page.refresh(SEED_HISTORY)
-    page.search.setText("payments")
-    page.model_filter.setCurrentIndex(1)
-    page.reset_btn.click()
-    assert page.search.text() == "" and page.model_filter.currentIndex() == 0 and page.repo_filter.currentIndex() == 0
+    assert order == [page.search, page.repo_filter, page.model_filter]
+    assert not hasattr(page, "reset_btn")
 
 
 def test_every_scan_row_ends_with_a_trash_can(qapp):
