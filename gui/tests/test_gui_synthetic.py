@@ -1717,3 +1717,24 @@ def test_reports_cards_wrap_when_the_window_is_narrow(qapp):
 def test_report_tabs_have_room_for_their_labels(qapp):
     assert "padding: 8px 16px" in gui.STYLE.split("QTabBar::tab {")[1].split("}")[0]
     assert "font-weight" not in gui.STYLE.split("QTabBar::tab {")[1].split("}")[0]
+
+
+def test_pressing_the_action_buttons_does_not_jump_to_the_bottom(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    qapp.processEvents()
+    assert page.table.verticalScrollMode() == gui.QAbstractItemView.ScrollPerPixel
+    panel = open_finding(page, "VULN-005")
+    qapp.processEvents()
+    bar = page.table.verticalScrollBar()
+    for button in (panel.accept_btn, panel.verify_btn, panel.dispute_btn):
+        button.click()
+        qapp.processEvents()
+        # moves by at most a few lines, never to the end of the table
+        assert bar.value() < bar.maximum() - 100
+        assert page.table.rowViewportPosition(page._rows.index(panel.finding)) > -page.table.rowHeight(0)
+    window.close()

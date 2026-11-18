@@ -199,6 +199,8 @@ def make_table(headers):
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    # Scroll by pixels: the default scrolls a whole row per step, so a small adjustment would jump far.
+    table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return table
 
