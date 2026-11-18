@@ -1034,7 +1034,7 @@ def test_scanning_popup_has_no_title_and_no_sliding_bar(qapp):
     page.reset()
 
 
-def test_scanning_screen_is_centred_and_the_result_card_sits_at_the_bottom(qapp):
+def test_scanning_screen_and_result_card_are_the_same_size_and_both_centred(qapp):
     window = MainWindow()
     window.resize(1360, 900)
     window.show()
@@ -1051,16 +1051,22 @@ def test_scanning_screen_is_centred_and_the_result_card_sits_at_the_bottom(qapp)
     assert abs(box.center().y() - win.center().y()) <= 3
     assert page.progress.width() >= 520 and page.progress.spinner.width() >= 160
     assert page._dim is not None and page._dim.geometry() == window.rect()
+    progress_size = (page.progress.width(), page.progress.height())
 
     for _ in range(len(page._run_output) + 1):
         page._next_line()
     qapp.processEvents()
-    assert page._dim is None  # the window is usable again
+    assert page._dim is None  # the scanning dim is gone
     card = page.result_dialog
     box = card.frameGeometry()
     assert abs(box.center().x() - win.center().x()) <= 3
-    assert box.top() > win.center().y() and box.bottom() <= win.bottom()
-    assert card.windowModality() == Qt.NonModal  # the findings stay clickable
+    assert abs(box.center().y() - win.center().y()) <= 3  # the middle, not the bottom
+    assert (card.width(), card.height()) == progress_size
+    assert card.windowModality() == Qt.WindowModal
+    assert page._result_dim is not None  # the window is dimmed behind it
+
+    card.close_btn.click()
+    assert page._result_dim is None
     window.close()
 
 
@@ -1252,3 +1258,167 @@ def test_sonar_scope_turns_once_every_three_seconds(qapp):
 def test_sonar_scope_paints_at_every_size(qapp):
     for size in (48, 96, 170):
         assert not gui.RadarSpinner(size=size).grab().isNull()
+
+
+# High+ is a deeper red than High
+
+def test_high_plus_text_is_a_deeper_red_than_high(qapp):
+    from PyQt5.QtGui import QColor
+    high_plus = QColor(gui.SEVERITY_COLORS["High+"][1])
+    high = QColor(gui.SEVERITY_COLORS["High"][1])
+    assert high_plus.lightness() < high.lightness()
+    assert high_plus.red() > high_plus.green() and high.red() > high.green()
+    tracker = gui.SeverityTracker()
+    assert gui.SEVERITY_COLORS["High+"][1].lower() in tracker.counts["High+"].styleSheet().lower()
+    assert gui.SEVERITY_COLORS["High"][1].lower() in tracker.counts["High"].styleSheet().lower()
+    # the zero counts too, not only the non-zero ones
+    assert tracker.counts["High+"].text() == "0"
+
+
+# Findings open their own details card when clicked
+
+def test_the_details_are_not_in_the_page_layout_any_more(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    assert page.layout().indexOf(page.detail) == -1
+    assert page.detail.isHidden()
+    assert page.detail.parentWidget() is page
+
+
+def test_a_scan_finishing_does_not_open_the_details_by_itself(qapp):
+    page = scan_with_findings(qapp)
+    assert page._current_finding() is not None  # the first row is selected
+    assert page.detail.isHidden() and page._detail_dim is None
+
+
+def test_clicking_a_finding_opens_its_details_card(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    page.result_dialog.close_btn.click()
+    qapp.processEvents()
+
+    page.table.cellClicked.emit(1, 0)  # a click on the second row
+    page.table.selectRow(1)
+    page._on_row_clicked(1, 0)
+    qapp.processEvents()
+    finding = page._current_finding()
+    assert not page.detail.isHidden()
+    assert finding.id in page.detail_heading.text()
+    assert page._detail_dim is not None
+    centre = page.detail.geometry().center()
+    assert abs(centre.x() - page.width() // 2) <= 3 and abs(centre.y() - page.height() // 2) <= 3
+    window.close()
+
+
+def test_a_real_click_on_a_row_opens_the_card(qapp):
+    from PyQt5.QtTest import QTest
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    page.result_dialog.close_btn.click()
+    qapp.processEvents()
+    rect = page.table.visualItemRect(page.table.item(2, 2))
+    QTest.mouseClick(page.table.viewport(), Qt.LeftButton, pos=rect.center())
+    qapp.processEvents()
+    assert page._current_finding() is page._rows[2]
+    assert not page.detail.isHidden()
+    window.close()
+
+
+def test_the_details_card_closes_with_the_x_the_backdrop_and_a_new_scan(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    page.result_dialog.close_btn.click()
+    for closer in (lambda: page.detail_close.click(),
+                   lambda: page._detail_dim.clicked.emit(),
+                   lambda: page.reset()):
+        page.table.selectRow(0) if page.table.rowCount() else None
+        page._open_detail() if page.table.rowCount() else None
+        if page.table.rowCount():
+            assert not page.detail.isHidden()
+        closer()
+        assert page.detail.isHidden() and page._detail_dim is None
+        run_demo_scan(page) if not page.table.rowCount() else None
+        if page.result_dialog is not None:
+            page.result_dialog.close_btn.click()
+    window.close()
+
+
+def test_actions_inside_the_details_card_still_update_the_row(qapp, monkeypatch):
+    stub_dialog(monkeypatch, QDialog.Accepted, note="from the card")
+    page = scan_with_findings(qapp)
+    finding = select_finding(page, "VULN-005")
+    page._open_detail()
+    page.accept_btn.click()
+    assert finding.status == "Accepted"
+    assert table_column(page, 4)[page._rows.index(finding)] == "Accepted"
+    assert "from the card" in page.decision_label.text()
+    page._close_detail()
+
+
+# The small burndown opens the big one
+
+def test_clicking_the_small_chart_opens_the_big_one_for_that_repo(qapp):
+    window = MainWindow()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    page.result_dialog.close_btn.click()
+    assert window.stack.currentIndex() == window.SCAN
+
+    page.repo_chart_card.clicked.emit()
+    assert window.stack.currentIndex() == window.STATS
+    assert window.stats_page.repo_box.currentText() == "sample-org/sample-backend"
+    assert [v for _, v in window.stats_page.chart.points] == [7, 7, 6, 6, 5, 5]
+    window.go_back()
+    assert window.stack.currentIndex() == window.SCAN  # the scan page is still there
+
+
+def test_the_small_chart_opens_the_repo_of_an_opened_past_scan(qapp):
+    window = MainWindow()
+    row = next(i for i, r in enumerate(window.history) if r.repo == "sample-org/payments-api")
+    window.open_record(row)
+    window.scan_page.repo_chart_card.clicked.emit()
+    assert window.stats_page.repo_box.currentText() == "sample-org/payments-api"
+
+
+def test_the_small_chart_does_nothing_before_a_scan(qapp):
+    window = MainWindow()
+    window.new_scan()
+    window.scan_page.repo_chart_card.clicked.emit()
+    assert window.stack.currentIndex() == window.SCAN
+
+
+def test_clickable_card_is_a_button_like_card(qapp):
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtTest import QTest
+    card = gui.ClickableCard()
+    card.resize(120, 80)
+    card.show()
+    assert card.cursor().shape() == Qt.PointingHandCursor
+    got = []
+    card.clicked.connect(lambda: got.append(1))
+    QTest.mouseClick(card, Qt.LeftButton)
+    QTest.mouseClick(card, Qt.RightButton)
+    assert got == [1]
+    card.event(QEvent(QEvent.Enter))
+    assert card.property("hover") is True
+    card.event(QEvent(QEvent.Leave))
+    assert card.property("hover") is False
+    card.close()
+
+
+def test_burndown_repo_key_falls_back_to_the_sample_repo():
+    from gui.data.mock_data import burndown_repo_key
+    assert burndown_repo_key("sample-org/payments-api") == "sample-org/payments-api"
+    assert burndown_repo_key("github.com/anything") == "sample-org/sample-backend"

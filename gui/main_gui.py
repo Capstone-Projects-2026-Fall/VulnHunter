@@ -24,7 +24,7 @@ from gui.data.mock_data import (
     ACCEPT_REASONS, ALL_REPOS, BURNDOWN_BY_REPO, DISABLED_MODELS, HUNT_PHASE, IGNORE_REASONS,
     MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_PHASES, SCAN_PHRASES, SEED_HISTORY,
     SEVERITY_ORDER, ScanRecord, burndown_series, burndown_totals, code_url, phase_of_line,
-    result_level, sample_fix, sample_snippet, severity_summary, split_location,
+    burndown_repo_key, result_level, sample_fix, sample_snippet, severity_summary, split_location,
 )
 from llm_connector.conn_all_llm import LLMConnector
 from gui.api_conn_page import ApiConnectorPage
@@ -40,6 +40,7 @@ QToolTip { background: #13233C; color: #E6EEF8; border: 1px solid #223A5A; paddi
 QFrame#header { background: #0A1424; border: 0; border-bottom: 1px solid #16273F; }
 QFrame#card { background: #0F1C31; border: 1px solid #1B2F4B; border-radius: 14px; }
 QFrame#card QLabel { background: transparent; }
+QFrame#card[hover="true"] { border: 1px solid #2C4A73; }
 QFrame#popupCard { background: #0F1C31; border: 1px solid #2A4468; border-radius: 18px; }
 QFrame#popupCard QLabel { background: transparent; }
 QLabel#severityHeading { font-size: 16px; font-weight: 600; color: #8CA3C0; }
@@ -134,8 +135,8 @@ HOME_BUTTON_PX = 28  # the VulnHunter logo button in the header; keeps its size 
 
 # Severity colours: (row background, text). Shared by the findings list, the tracker and the result card.
 SEVERITY_COLORS = {
-    "High+": ("#4A1220", "#FF9AA5"),  # dark red
-    "High": ("#5E1F24", "#FF8080"),  # red
+    "High+": ("#4A1220", "#F0444F"),  # dark red: a deeper red than High, in the rows and the counts
+    "High": ("#5E1F24", "#FF9494"),  # red
     "Medium": ("#5A3A14", "#FFB35C"),  # orange
     "Low": ("#54481A", "#FFE08A"),  # yellow
     "Informational": ("#1C2A44", "#B7C6DD"),  # blue-grey
@@ -180,6 +181,36 @@ def make_table(headers):
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return table
+
+
+class ClickableCard(QFrame):
+    """A card that behaves like a button: pointing hand, an outline on hover, and a clicked signal."""
+    clicked = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setProperty("hover", False)
+
+    def _repolish(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def enterEvent(self, event):
+        self.setProperty("hover", True)
+        self._repolish()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setProperty("hover", False)
+        self._repolish()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 class SeverityRowDelegate(QStyledItemDelegate):
@@ -958,7 +989,8 @@ class RadarSpinner(QWidget):
 
 
 class DimOverlay(QWidget):
-    """Darkens the window behind a modal popup and swallows clicks."""
+    """Darkens the window behind a popup and swallows clicks (it reports them through `clicked`)."""
+    clicked = pyqtSignal()
 
     def __init__(self, window):
         super().__init__(window)
@@ -974,6 +1006,9 @@ class DimOverlay(QWidget):
             self.raise_()
         return False
 
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+
     def paintEvent(self, _event):
         QPainter(self).fillRect(self.rect(), QColor(0, 0, 0, 150))
 
@@ -987,14 +1022,18 @@ class FloatingCard(QDialog):
     """A frameless rounded card over the main window: at the bottom centre by default, or the middle."""
     MARGIN = 28
     CENTERED = False
+    CARD_WIDTH = 520
+    CARD_MIN_HEIGHT = 410  # the scanning screen and the result card are the same size
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("QDialog { background: transparent; }")
+        self.setFixedWidth(self.CARD_WIDTH)
         self.card = QFrame(self)
         self.card.setObjectName("popupCard")
+        self.card.setMinimumHeight(self.CARD_MIN_HEIGHT)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self.card)
@@ -1104,7 +1143,6 @@ class ScanProgressDialog(FloatingCard):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowModality(Qt.WindowModal)
-        self.setFixedWidth(520)
         self._quiet = False
         self.phase_index = 0
 
@@ -1149,7 +1187,8 @@ class ScanProgressDialog(FloatingCard):
 
 class ScanResultDialog(FloatingCard):
     """Result card shown when a scan finishes: red, amber or green, with a count per severity.
-    All its text is one size."""
+    All its text is one size. Centred, like the scanning screen."""
+    CENTERED = True
     TEXT_SIZE = 18
     BANNERS = {  # level: (background, border, text colour, icon)
         "high": ("#2A1010", "#6B2A2A", "#F87171", "⚠"),
@@ -1161,8 +1200,7 @@ class ScanResultDialog(FloatingCard):
 
     def __init__(self, parent, findings):
         super().__init__(parent)
-        self.setWindowModality(Qt.NonModal)  # the table behind stays usable
-        self.setFixedWidth(580)
+        self.setWindowModality(Qt.WindowModal)
         self.level = result_level(findings)
         background, border, colour, icon = self.BANNERS[self.level]
         count = len(findings)
@@ -1208,17 +1246,19 @@ class ScanResultDialog(FloatingCard):
         footer.addWidget(self.view_btn)
 
         layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+        layout.addStretch(1)
         layout.addWidget(banner)
         if self.chips:
             layout.addLayout(chips)
-        layout.addSpacing(4)
+        layout.addStretch(1)
         layout.addLayout(footer)
 
 
 class ScanPage(QWidget):
     finished = pyqtSignal(object)  # emits a ScanRecord
+    repo_chart_requested = pyqtSignal(str)  # the small burndown was clicked: show the big one for this repo
 
     def __init__(self, sample_findings, sample_output):
         super().__init__()
@@ -1234,6 +1274,9 @@ class ScanPage(QWidget):
         self.phrases = PhraseRotator()
         self.progress = None  # the scanning popup while a scan runs
         self._dim = None  # darkens the window behind it
+        self._result_dim = None
+        self._detail_dim = None
+        self._chart_repo = None
         self.result_dialog = None
         self._phase = 0
 
@@ -1270,11 +1313,14 @@ class ScanPage(QWidget):
         self.table.setColumnWidth(4, 125)
         self.table.setItemDelegate(SeverityRowDelegate(self.table))
         self.table.itemSelectionChanged.connect(self._refresh_detail)
+        self.table.cellClicked.connect(self._on_row_clicked)
         self.tracker = SeverityTracker()
         self.repo_chart = BurndownChart(compact=True)
-        chart_card = QFrame()
-        chart_card.setObjectName("card")
+        chart_card = ClickableCard()
         chart_card.setFixedWidth(200)
+        chart_card.setToolTip("Click for a bigger chart")
+        chart_card.clicked.connect(self._open_repo_chart)
+        self.repo_chart_card = chart_card
         chart_box = QVBoxLayout(chart_card)
         chart_box.setContentsMargins(8, 8, 8, 8)
         chart_box.setSpacing(2)
@@ -1297,8 +1343,9 @@ class ScanPage(QWidget):
 
         # Selected finding: details and actions. Fix, Accept, Ignore and View in code are
         # mocked: they work on sample data only and never touch a repository.
-        self.detail = QFrame()
-        self.detail.setObjectName("card")
+        self.detail = QFrame(self)  # a card that opens over the page when a finding is clicked
+        self.detail.setObjectName("popupCard")
+        self.detail.hide()
         self.detail_heading = QLabel()
         self.detail_heading.setStyleSheet("font-weight: 600;")
         self.detail_title = QLabel()
@@ -1332,7 +1379,11 @@ class ScanPage(QWidget):
         heading_row = QHBoxLayout()
         heading_row.addWidget(self.detail_heading)
         heading_row.addStretch()
-        heading_row.addWidget(self.code_link)
+        self.detail_close = QPushButton("✕")
+        self.detail_close.setObjectName("iconButton")
+        self.detail_close.setToolTip("Close")
+        self.detail_close.clicked.connect(self._close_detail)
+        heading_row.addWidget(self.detail_close)
         actions = QHBoxLayout()
         actions.setSpacing(10)
         for btn in (self.fix_btn, self.accept_btn, self.ignore_btn):
@@ -1341,9 +1392,11 @@ class ScanPage(QWidget):
         for btn in (self.verify_btn, self.report_btn):
             actions.addWidget(btn)
         detail_box = QVBoxLayout(self.detail)
-        detail_box.setSpacing(6)
+        detail_box.setContentsMargins(24, 18, 24, 22)
+        detail_box.setSpacing(8)
         detail_box.addLayout(heading_row)
         detail_box.addWidget(self.detail_title)
+        detail_box.addWidget(self.code_link, 0, Qt.AlignLeft)
         detail_box.addWidget(self.decision_label)
         detail_box.addLayout(actions)
 
@@ -1361,7 +1414,6 @@ class ScanPage(QWidget):
         layout.setSpacing(16)
         layout.addLayout(top)
         layout.addLayout(body, 2)
-        layout.addWidget(self.detail)
         layout.addWidget(self.log_toggle, 0, Qt.AlignLeft)
         layout.addWidget(self.output, 1)
 
@@ -1377,7 +1429,7 @@ class ScanPage(QWidget):
         self.repo.clear()
         self.demo.setChecked(True)
         self._fill_table([])
-        self.repo_chart.set_points([])
+        self._set_repo_chart(None)
         self.output.clear()
         self._refresh_detail()
 
@@ -1389,7 +1441,7 @@ class ScanPage(QWidget):
         self.repo.setText(record.repo)
         self.demo.setChecked(record.mode == "Demo")
         self._fill_table(record.findings)
-        self.repo_chart.set_points(burndown_series(record.repo))
+        self._set_repo_chart(record.repo)
         self.output.setPlainText("\n".join(record.output))
         self._set_inputs_editable(False)
 
@@ -1405,6 +1457,45 @@ class ScanPage(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.table.resizeRowsToContents()
+        if not self.detail.isHidden():
+            self._place_detail()
+
+    # The small per-repo burndown opens the big one on the Stats page
+    def _set_repo_chart(self, repo):
+        self._chart_repo = repo
+        self.repo_chart.set_points(burndown_series(repo) if repo else [])
+
+    def _open_repo_chart(self):
+        if self._chart_repo:
+            self.repo_chart_requested.emit(burndown_repo_key(self._chart_repo))
+
+    # Finding details: a card that opens when a finding is clicked
+    DETAIL_WIDTH = 760
+
+    def _on_row_clicked(self, _row, _column):
+        if self._current_finding() is not None:  # the click has selected the row
+            self._open_detail()
+
+    def _open_detail(self):
+        self._refresh_detail()
+        if self._detail_dim is None:
+            self._detail_dim = DimOverlay(self)
+            self._detail_dim.clicked.connect(self._close_detail)
+        self.detail.setFixedWidth(self.DETAIL_WIDTH)
+        self.detail.adjustSize()
+        self._place_detail()
+        self.detail.show()
+        self.detail.raise_()
+
+    def _place_detail(self):
+        self.detail.move((self.width() - self.detail.width()) // 2,
+                         (self.height() - self.detail.height()) // 2)
+
+    def _close_detail(self):
+        self.detail.hide()
+        if self._detail_dim is not None:
+            dim, self._detail_dim = self._detail_dim, None
+            dim.dismiss()
 
     def _set_inputs_editable(self, editable):
         self.repo.setReadOnly(not editable)
@@ -1440,7 +1531,7 @@ class ScanPage(QWidget):
         # Otherwise, run your existing simulated demo replay workflow
         self._close_result()
         self._fill_table([])
-        self.repo_chart.set_points([])
+        self._set_repo_chart(None)
         self.output.clear()
         self.scan_btn.setEnabled(False)
         self._line_index = 0
@@ -1479,7 +1570,13 @@ class ScanPage(QWidget):
             dialog.finish()
             dialog.deleteLater()
 
+    def _remove_result_dim(self, *_args):
+        if self._result_dim is not None:
+            dim, self._result_dim = self._result_dim, None
+            dim.dismiss()
+
     def _close_result(self):
+        self._remove_result_dim()
         if self.result_dialog is not None:
             dialog, self.result_dialog = self.result_dialog, None
             dialog.close()
@@ -1502,8 +1599,13 @@ class ScanPage(QWidget):
         self.scan_btn.setEnabled(True)
 
     def _show_result(self, findings):
+        self._close_result()
+        window = self.window()
+        if window is not self:
+            self._result_dim = DimOverlay(window)
         self.result_dialog = ScanResultDialog(self, findings)
         self.result_dialog.accepted.connect(self.table.setFocus)
+        self.result_dialog.finished.connect(self._remove_result_dim)
         self.result_dialog.show()
 
     def _output_for_model(self):
@@ -1527,7 +1629,7 @@ class ScanPage(QWidget):
         # Copies, so a decision on one scan never changes the sample data or other scans.
         findings = [replace(f) for f in self.sample_findings]
         self._fill_table(findings)
-        self.repo_chart.set_points(burndown_series(self.repo.text().strip() or REPO_URL))
+        self._set_repo_chart(self.repo.text().strip() or REPO_URL)
         self.scan_btn.setEnabled(True)
         now = datetime.now()
         record = ScanRecord(
@@ -1544,6 +1646,7 @@ class ScanPage(QWidget):
         self._show_result(findings)
 
     def _fill_table(self, findings):
+        self._close_detail()
         self.tracker.update_counts(findings)
         # A severity outside SEVERITY_ORDER sorts last instead of raising.
         findings = sorted(findings, key=lambda f: SEVERITY_ORDER.index(f.severity)
@@ -1745,6 +1848,7 @@ class MainWindow(QMainWindow):
         self.history_page.new_scan.connect(self.new_scan)
         self.history_page.record_selected.connect(self.open_record)
         self.scan_page.finished.connect(self.add_record)
+        self.scan_page.repo_chart_requested.connect(self.show_repo_burndown)
         self.history_page.refresh(self.history)
         self._apply_zoom(self.DEFAULT_ZOOM)
 
@@ -1753,6 +1857,11 @@ class MainWindow(QMainWindow):
 
     def show_stats(self):
         self._navigate_to(self.STATS)
+
+    def show_repo_burndown(self, repo):
+        """Open the Stats page on one repo's burndown (the big version of the scan page's chart)."""
+        self.stats_page.repo_box.setCurrentText(repo)
+        self.show_stats()
 
     def show_api_settings(self):
         self.settings_dialog.show()

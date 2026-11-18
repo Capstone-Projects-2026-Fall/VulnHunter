@@ -255,6 +255,11 @@ def burndown_series(repo=ALL_REPOS):
     return list(zip(BURNDOWN_WEEKS, values))
 
 
+def burndown_repo_key(repo):
+    """The sample repo whose burndown stands in for `repo` (itself if it has one)."""
+    return repo if repo in BURNDOWN_BY_REPO else DEFAULT_BURNDOWN_REPO
+
+
 def burndown_totals(series):
     """(open, closed, total) from a burndown series: total is the first point, open the last."""
     if not series:
