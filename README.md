@@ -30,9 +30,10 @@ python gui/main_gui.py
 
 Leave the **Demo** box checked and press **Scan**. Live scans are not implemented yet, so keep Demo checked.
 
-Fix, Accept and Ignore work on sample data only. Verify and Report are not available yet. The GUI needs **Python 3.11 or newer** (tested on 3.12.10).
+Accept fix, Dispute and Verify work on sample data only (nothing touches a repository). A dispute and its reason are remembered between sessions. The GUI needs **Python 3.11 or newer** (tested on 3.12.10).
 
-Shortcut: `guiun_gui.cmd` (Windows) or `gui/run_gui.sh` (macOS/Linux) creates `.venv`, installs PyQt5 and starts the GUI.
+Shortcut: `gui
+un_gui.cmd` (Windows) or `gui/run_gui.sh` (macOS/Linux) creates `.venv`, installs PyQt5 and starts the GUI.
 
 To build a standalone Windows folder (no Python needed to run it), run `guiuild_exe.cmd` (or `gui/build_exe.sh`). The result is `dist/VulnHunterGUI/`; zip the whole folder to share it. The build is unsigned, so Windows may warn on first run.
 

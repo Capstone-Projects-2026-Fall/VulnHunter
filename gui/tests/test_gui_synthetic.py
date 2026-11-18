@@ -21,8 +21,15 @@ from gui import main_gui as gui
 from gui.main_gui import HistoryPage, MainWindow, ScanPage
 from gui.data.mock_data import (
     DISABLED_MODELS, MODEL_IDS, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SAMPLE_SNIPPETS, SEED_HISTORY,
-    SEVERITY_ORDER, Finding, code_url, sample_fix, sample_snippet, split_location,
+    SEVERITY_ORDER, Finding, code_url, sample_fix, sample_issue, sample_snippet, split_location,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path, monkeypatch):
+    """A MainWindow built without settings would use the real registry key; give it a temp file instead."""
+    real = QSettings
+    monkeypatch.setattr(gui, "QSettings", lambda *_args: real(str(tmp_path / "app.ini"), real.IniFormat))
 
 
 @pytest.fixture(scope="session")
@@ -42,7 +49,8 @@ def run_demo_scan(page):
 
 
 def table_column(page, col):
-    return [page.table.item(r, col).text() for r in range(page.table.rowCount())]
+    detail_row = getattr(page, "_detail_row", None)  # an open details row is not a finding
+    return [page.table.item(r, col).text() for r in range(page.table.rowCount()) if r != detail_row]
 
 
 # Happy path
@@ -91,13 +99,12 @@ def test_seed_history_is_shown_on_startup(qapp):
 
 # Empty states
 
-def test_new_scan_page_is_empty_and_actions_disabled(qapp):
+def test_new_scan_page_is_empty_with_nothing_open(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     page.reset()
     assert page.table.rowCount() == 0
     assert page.output.toPlainText() == ""
-    for btn in (page.fix_btn, page.verify_btn, page.report_btn):
-        assert not btn.isEnabled()
+    assert page.panel is None and page._current_finding() is None
 
 
 def test_empty_history_page(qapp):
@@ -154,12 +161,12 @@ def test_scan_with_zero_findings(qapp):
 
 # Edge cases
 
-def test_actions_enable_only_with_a_selection(qapp):
+def test_a_selection_alone_opens_nothing(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     page._fill_table(SAMPLE_FINDINGS)  # selects row 0
-    assert all(b.isEnabled() for b in (page.fix_btn, page.verify_btn, page.report_btn))
+    assert page._current_finding() is not None and page.panel is None
     page.table.clearSelection()
-    assert not any(b.isEnabled() for b in (page.fix_btn, page.verify_btn, page.report_btn))
+    assert page._current_finding() is None
 
 
 def test_long_text_and_many_rows(qapp):
@@ -206,18 +213,6 @@ def test_unchecking_demo_takes_live_route_and_shows_errors(qapp, monkeypatch):
     assert not page.timer.isActive()
 
 
-def test_verify_and_report_are_not_implemented(qapp):
-    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    page._fill_table([replace(f) for f in SAMPLE_FINDINGS])
-    before = table_column(page, 4)
-
-    for btn in (page.verify_btn, page.report_btn):
-        btn.click()
-        assert not page.action_note.isHidden()
-        assert page.action_note.text() == f"{btn.text()} is not available in this demo yet."
-    assert table_column(page, 4) == before
-
-
 # Model dropdown
 
 def test_model_dropdown_enabled_and_disabled_entries(qapp):
@@ -251,13 +246,13 @@ def test_home_navigation(qapp):
     window.go_back()
     assert window.stack.currentIndex() == window.HOME
 
-    window.home_page.history_requested.emit()
-    assert window.stack.currentIndex() == window.HISTORY
+    window.home_page.findings_requested.emit()
+    assert window.stack.currentIndex() == window.FINDINGS
     window.show_reports()
     assert window.stack.currentIndex() == window.REPORTS
 
     window.go_back()
-    assert window.stack.currentIndex() == window.HISTORY
+    assert window.stack.currentIndex() == window.FINDINGS
     assert window.back_button.isEnabled()
     assert window.forward_button.isEnabled()
     window.go_forward()
@@ -272,7 +267,7 @@ def test_navigation_shortcuts_and_branching_history(qapp):
 
     back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.ControlModifier)
     QApplication.sendEvent(window.home_button, back_event)
-    assert window.stack.currentIndex() == window.HISTORY
+    assert window.stack.currentIndex() == window.FINDINGS
 
     command_forward_event = QKeyEvent(
         QEvent.KeyPress, Qt.Key_Right, Qt.MetaModifier)
@@ -281,7 +276,7 @@ def test_navigation_shortcuts_and_branching_history(qapp):
 
     command_back_event = QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.MetaModifier)
     QApplication.sendEvent(window.home_button, command_back_event)
-    assert window.stack.currentIndex() == window.HISTORY
+    assert window.stack.currentIndex() == window.FINDINGS
 
     forward_event = QKeyEvent(
         QEvent.KeyPress, Qt.Key_Right, Qt.ControlModifier)
@@ -477,7 +472,7 @@ def test_home_page_widgets_use_the_sized_object_names(qapp):
     assert home.findChild(gui.QPushButton, "homeNewScan") is not None
 
 
-# Per-finding actions: Fix, Accept, Dispute, View in code (all mocked)
+# Findings open under their row; Accept fix, Dispute and Verify (all mocked)
 
 def scan_with_findings(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
@@ -491,103 +486,221 @@ def select_finding(page, finding_id):
     return page._current_finding()
 
 
-def decide(page, kind, reason_index=0, note=""):
-    """Click Accept or Dispute, fill the inline form and save it."""
-    (page.accept_btn if kind == "Accept" else page.dispute_btn).click()
-    page.decision_reason.setCurrentIndex(reason_index)
-    page.decision_note.setPlainText(note)
-    page.decision_save.click()
+def open_finding(page, finding_id):
+    """Click a finding's row and return the details panel that opens under it."""
+    index = next(i for i, f in enumerate(page._rows) if f.id == finding_id)
+    row = index + 1 if page._detail_row is not None and index >= page._detail_row else index
+    page._on_row_clicked(row, 0)  # rows under an open details row sit one lower in the table
+    return page.panel
 
 
-def test_detail_panel_shows_the_selected_finding(qapp):
+def dispute(panel, reason_index=1, note=""):
+    """Click Dispute, fill the inline form and save it."""
+    panel.dispute_btn.click()
+    panel.decision_reason.setCurrentIndex(reason_index)
+    panel.decision_note.setPlainText(note)
+    panel.decision_save.click()
+
+
+def test_details_open_under_the_clicked_row(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    heading = page.detail_heading.text()
+    rows = page.table.rowCount()
+    panel = open_finding(page, "VULN-005")
+    finding = panel.finding
+    index = page._rows.index(finding)
+
+    assert page.table.rowCount() == rows + 1 and page._detail_row == index + 1
+    assert page.table.cellWidget(index + 1, 0) is panel
+    heading = panel.heading.text()
     assert finding.id in heading and finding.severity in heading and finding.status in heading
-    assert page.detail_title.text() == finding.title
-    assert page.location_label.text() == finding.location
-    assert page.decision_label.isHidden()
-    assert page.cwe_link.text() == f"{finding.cwe} {gui.cwe_name(finding.cwe)} ↗"
-    assert page.fix_text.text() == sample_fix(finding)
+    assert panel.wrong_text.text() == sample_issue(finding)[0]
+    assert panel.attacker_text.text() == sample_issue(finding)[1]
+    assert panel.location_label.text() == finding.location
+    assert panel.fix_text.text() == sample_fix(finding)  # the fix is shown at once, no Fix button
+    assert panel.cwe_link.text() == f"{finding.cwe} {gui.cwe_name(finding.cwe)} ↗"
+    assert not hasattr(panel, "fix_btn") and not hasattr(panel, "report_btn")
 
 
-def test_detail_panel_without_selection_disables_all_actions(qapp):
-    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    page.reset()
-    assert "No finding selected" in page.detail_heading.text()
-    buttons = (page.fix_btn, page.accept_btn, page.dispute_btn, page.verify_btn, page.report_btn)
-    assert not any(b.isEnabled() for b in buttons)
-    assert page.cwe_link.isHidden() and page.location_label.isHidden()
-
-
-def test_fix_proposes_a_sample_fix_and_marks_the_row(qapp):
+def test_clicking_again_or_clicking_another_finding_closes_it(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    page.fix_btn.click()
+    rows = page.table.rowCount()
+    first = open_finding(page, "VULN-005")
+    assert first is page.panel and page._expanded.id == "VULN-005"
 
-    assert finding.status == "Fix proposed"
-    assert table_column(page, 4)[page._rows.index(finding)] == "Fix proposed"
-    assert "Mocked" in page.action_note.text() and not page.action_note.isHidden()
-    assert page.fix_text.text() == sample_fix(finding)
+    open_finding(page, "VULN-005")  # the same row again
+    assert page.panel is None and page.table.rowCount() == rows
+
+    open_finding(page, "VULN-005")
+    second = open_finding(page, "VULN-006")  # a different row: only one is ever open
+    assert page.table.rowCount() == rows + 1
+    assert page._expanded.id == "VULN-006" and second is page.panel
+    assert page._current_finding().id == "VULN-006"
 
 
-def test_accept_records_reason_and_context(qapp):
+def test_the_details_row_is_not_a_finding(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    decide(page, "Accept", reason_index=1, note="  Reviewed with the owner  ")
+    open_finding(page, "VULN-005")
+    detail_row = page._detail_row
+    before = page._expanded
+    page._on_row_clicked(detail_row, 0)  # a click inside the details does nothing to the row
+    assert page._expanded is before and page._detail_row == detail_row
+    assert page._data_index(detail_row) is None
+    assert page._finding_at(detail_row + 1) is page._rows[detail_row]
 
-    assert (finding.decision, finding.status) == ("Accepted", "Accepted")
-    assert finding.reason == gui.ACCEPT_REASONS[1]
-    assert finding.note == "Reviewed with the owner"
-    assert table_column(page, 4)[page._rows.index(finding)] == "Accepted"
-    assert "Reviewed with the owner" in page.decision_label.text()
-    assert page.decision_form.isHidden()
+
+def test_a_scan_finishing_does_not_open_the_details_by_itself(qapp):
+    page = scan_with_findings(qapp)
+    assert page._current_finding() is not None  # the first row is selected
+    assert page.panel is None
+
+
+def test_a_real_click_on_a_row_opens_and_closes_the_details(qapp):
+    from PyQt5.QtTest import QTest
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    qapp.processEvents()
+    rect = page.table.visualItemRect(page.table.item(2, 2))
+    QTest.mouseClick(page.table.viewport(), Qt.LeftButton, pos=rect.center())
+    qapp.processEvents()
+    assert page.panel is not None and page._expanded is page._rows[2]
+    rect = page.table.visualItemRect(page.table.item(2, 2))  # the view may have scrolled
+    QTest.mouseClick(page.table.viewport(), Qt.LeftButton, pos=rect.center())
+    qapp.processEvents()
+    assert page.panel is None
+    window.close()
+
+
+def test_the_details_row_gets_the_height_it_needs(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    run_demo_scan(page)
+    open_finding(page, "VULN-005")
+    qapp.processEvents()
+    assert page.table.rowHeight(page._detail_row) >= page.panel.sizeHint().height() > 150
+    before = page.table.rowHeight(page._detail_row)
+    page.panel.dispute_btn.click()  # the inline form makes it taller
+    assert page.table.rowHeight(page._detail_row) > before
+    window.close()
+
+
+def test_accept_fix_then_verify(qapp):
+    page = scan_with_findings(qapp)
+    panel = open_finding(page, "VULN-005")
+    finding = panel.finding
+    assert not panel.verify_btn.isEnabled() and panel.verify_btn.toolTip() == "Accept the fix first."
+
+    panel.accept_btn.click()
+    assert finding.status == "Fix accepted"
+    assert table_column(page, 4)[page._rows.index(finding)] == "Fix accepted"
+    assert not panel.accept_btn.isEnabled() and panel.verify_btn.isEnabled()
+    assert "Nothing was changed" in panel.action_note.text()
+    assert gui.status_group(finding.status) == "In progress"
+
+    panel.verify_btn.click()
+    assert finding.status == "Verified" and not panel.verify_btn.isEnabled()
+    assert "Mocked" in panel.action_note.text()
+    assert table_column(page, 4)[page._rows.index(finding)] == "Verified"
+
+
+def test_dispute_needs_a_reason_and_other_needs_a_note(qapp):
+    page = scan_with_findings(qapp)
+    panel = open_finding(page, "VULN-005")
+    panel.dispute_btn.click()
+    assert not panel.decision_form.isHidden()
+    assert panel.decision_reason.currentText() == "Choose a reason"
+    assert not panel.decision_save.isEnabled()
+
+    panel.decision_reason.setCurrentIndex(1)
+    assert panel.decision_save.isEnabled()
+    other = panel.decision_reason.findText("Other")
+    panel.decision_reason.setCurrentIndex(other)
+    assert not panel.decision_save.isEnabled()  # "Other" needs context
+    panel.decision_note.setPlainText("   ")
+    assert not panel.decision_save.isEnabled()
+    panel.decision_note.setPlainText("Owned by another team")
+    assert panel.decision_save.isEnabled()
+    assert [panel.decision_reason.itemText(i) for i in range(1, panel.decision_reason.count())] == gui.DISPUTE_REASONS
 
 
 def test_dispute_records_reason_and_context(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-006")
-    decide(page, "Dispute", reason_index=0, note="Test code only")
+    panel = open_finding(page, "VULN-006")
+    finding = panel.finding
+    dispute(panel, reason_index=1, note="  Test code only  ")
 
     assert (finding.decision, finding.status) == ("Disputed", "Disputed")
-    assert finding.reason == gui.DISPUTE_REASONS[0]
-    assert "Disputed: False positive" in page.decision_label.text()
+    assert finding.reason == gui.DISPUTE_REASONS[0] and finding.note == "Test code only"
+    assert table_column(page, 4)[page._rows.index(finding)] == "Disputed"
+    assert "Disputed: False positive" in panel.decision_label.text()
+    assert "Test code only" in panel.decision_label.text()
+    assert panel.decision_form.isHidden() and not panel.dispute_btn.isEnabled()
 
 
-def test_cancelled_decision_changes_nothing(qapp):
+def test_cancelled_dispute_changes_nothing(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
+    panel = open_finding(page, "VULN-005")
+    finding = panel.finding
     before = finding.status
-    page.dispute_btn.click()
-    assert not page.decision_form.isHidden()
-    page.decision_note.setPlainText("should not be saved")
-    page.decision_cancel.click()
-
-    assert page.decision_form.isHidden()
-    assert finding.status == before
-    assert (finding.decision, finding.reason, finding.note) == ("", "", "")
+    panel.dispute_btn.click()
+    panel.decision_reason.setCurrentIndex(2)
+    panel.decision_note.setPlainText("should not be saved")
+    panel.decision_cancel.click()
+    assert panel.decision_form.isHidden()
+    assert finding.status == before and (finding.decision, finding.reason, finding.note) == ("", "", "")
 
 
-def test_decisions_never_change_sample_data_or_other_scans(qapp):
+def test_changes_never_touch_the_sample_data_or_other_scans(qapp):
     originals = [(f.id, f.status, f.decision) for f in SAMPLE_FINDINGS]
-    window = MainWindow(QSettings())
+    window = MainWindow()
     run_demo_scan(window.scan_page)
-    select_finding(window.scan_page, "VULN-005")
-    decide(window.scan_page, "Accept")
+    dispute(open_finding(window.scan_page, "VULN-005"))
 
     assert [(f.id, f.status, f.decision) for f in SAMPLE_FINDINGS] == originals
     seeded = [f for r in window.history[1:] for f in r.findings if f.id == "VULN-005"]
     assert seeded and all(f.decision == "" for f in seeded)
 
-    run_demo_scan(window.scan_page)  # a second scan starts clean
-    assert all(f.decision == "" for f in window.scan_page._rows)
+
+def test_a_dispute_is_remembered_across_sessions_and_scans(qapp, tmp_path):
+    ini = str(tmp_path / "remember.ini")
+    first = MainWindow(settings=QSettings(ini, QSettings.IniFormat))
+    run_demo_scan(first.scan_page)
+    panel = open_finding(first.scan_page, "VULN-005")
+    dispute(panel, reason_index=3, note="Would break the cluster")
+    accepted = open_finding(first.scan_page, "VULN-006")
+    accepted.accept_btn.click()  # workflow steps are session state, not remembered
+
+    second = MainWindow(settings=QSettings(ini, QSettings.IniFormat))
+    run_demo_scan(second.scan_page)  # the same repo again
+    again = select_finding(second.scan_page, "VULN-005")
+    assert (again.decision, again.status) == ("Disputed", "Disputed")
+    assert again.reason == gui.DISPUTE_REASONS[2] and again.note == "Would break the cluster"
+    assert select_finding(second.scan_page, "VULN-006").status != "Fix accepted"
+    assert gui.load_disputes(QSettings(ini, QSettings.IniFormat)).keys() == {
+        f"{gui.REPO_URL}|VULN-005"}
 
 
-def test_decision_is_kept_when_a_past_scan_is_reopened(qapp):
-    window = MainWindow(QSettings())
+def test_disputes_ignore_damaged_saved_data(qapp, tmp_path):
+    settings = QSettings(str(tmp_path / "bad.ini"), QSettings.IniFormat)
+    settings.setValue(gui.DISPUTES_KEY, "{not json")
+    assert gui.load_disputes(settings) == {}
+    settings.setValue(gui.DISPUTES_KEY, "[1, 2]")
+    assert gui.load_disputes(settings) == {}
+    findings = [replace(f) for f in SAMPLE_FINDINGS]
+    gui.apply_disputes(settings, "any", findings)
+    assert all(f.decision == "" for f in findings)
+
+
+def test_a_dispute_is_kept_when_a_past_scan_is_reopened(qapp):
+    window = MainWindow()
     run_demo_scan(window.scan_page)
-    select_finding(window.scan_page, "VULN-005")
-    decide(window.scan_page, "Dispute", note="kept")
+    dispute(open_finding(window.scan_page, "VULN-005"), note="kept")
 
     window.open_record(1)  # some other scan
     window.open_record(0)  # back to the one just decided on
@@ -595,65 +708,31 @@ def test_decision_is_kept_when_a_past_scan_is_reopened(qapp):
     assert finding.decision == "Disputed" and finding.note == "kept"
 
 
-def test_decision_form_lists_the_right_reasons(qapp):
-    page = scan_with_findings(qapp)
-    select_finding(page, "VULN-005")
-    page.accept_btn.click()
-    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.ACCEPT_REASONS
-    assert page.decision_title.text() == "Accept: VULN-005"
-    page.dispute_btn.click()
-    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.DISPUTE_REASONS
-    assert page.decision_title.text() == "Dispute: VULN-005"
-
-
 def test_code_view_shows_a_sample_snippet_with_the_flagged_line(qapp):
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-003")
-    code = page.code_view.toPlainText()
-    _path, line = split_location(finding.location)
-    assert f"> {line:>4} |" in code
-    assert code_url(finding).endswith(f"#L{line}")
-    assert page.code_view.isReadOnly()
-    assert len(page.code_view.extraSelections()) == 1
+    panel = open_finding(page, "VULN-003")
+    _path, line = split_location(panel.finding.location)
+    assert f"> {line:>4} |" in panel.code_view.toPlainText()
+    assert code_url(panel.finding).endswith(f"#L{line}")
+    assert panel.code_view.isReadOnly() and len(panel.code_view.extraSelections()) == 1
 
 
 def test_cwe_link_opens_the_mitre_page(qapp, monkeypatch):
     opened = []
     monkeypatch.setattr(gui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    page.cwe_link.click()
-    assert opened == [gui.cwe_url(finding.cwe)] and opened[0].startswith("https://cwe.mitre.org/")
+    panel = open_finding(page, "VULN-005")
+    panel.cwe_link.click()
+    assert opened == [gui.cwe_url(panel.finding.cwe)] and opened[0].startswith("https://cwe.mitre.org/")
 
 
-def test_copy_puts_the_location_on_the_clipboard(qapp):
-    page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    page.copy_btn.click()
-    assert QApplication.clipboard().text() == finding.location
-
-
-def test_editor_link_needs_a_local_folder_that_holds_the_file(qapp, tmp_path, monkeypatch):
-    opened = []
-    monkeypatch.setattr(gui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
-    page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    assert not page.editor_btn.isEnabled()  # the repo text is not a local folder
-
-    path, line = split_location(finding.location)
-    target = tmp_path / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("x = 1\n")
-    page.repo.setText(str(tmp_path))
-    select_finding(page, "VULN-006")
-    select_finding(page, "VULN-005")
-    assert page.editor_btn.isEnabled()
-    page.editor_btn.click()
-    assert opened[0].startswith("vscode://file/") and opened[0].endswith(f"{path}:{line}")
-
-    assert gui.editor_uri(str(tmp_path), "missing/file.py:3") == ""
-    assert gui.editor_uri("https://github.com/x/y", finding.location) == ""
-    assert gui.editor_uri("", finding.location) == ""
+def test_sample_issue_text_exists_for_every_sample_weakness():
+    from gui.data.mock_data import DEFAULT_SAMPLE_ISSUE, sample_issue
+    seeded = [f for r in SEED_HISTORY for f in r.findings]
+    for finding in list(SAMPLE_FINDINGS) + seeded:
+        wrong, attacker = sample_issue(finding)
+        assert wrong and attacker
+    assert sample_issue(Finding("X", "Low", "t", "a.py:1", "Open", cwe="CWE-1")) == DEFAULT_SAMPLE_ISSUE
 
 
 def test_every_sample_finding_has_a_snippet_matching_its_line():
@@ -682,7 +761,7 @@ def test_header_has_sample_tag_status_pill_and_help_but_no_gear(qapp):
     assert window.status_pill.state() == "off"
     assert window.help_button.toolTip() == "Getting started"
     assert not hasattr(window, "gear_button")
-    assert window.stack.count() == 5  # home, history, scan, reports, findings; the API settings are a popover
+    assert window.stack.count() == 4  # home, findings (with scan runs), scan, reports; API settings are a popover
 
 
 def test_status_pill_pulses_only_while_not_connected(qapp):
@@ -830,7 +909,6 @@ def test_getting_started_banner_respects_dont_show_again(qapp, tmp_path):
 
 def test_banner_follows_the_saved_choice_only_when_asked(qapp, tmp_path):
     window = MainWindow(settings=QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
-    assert window.home_page.getting_started.isHidden() or True  # shown by maybe_show_reminder at launch
     assert window.maybe_show_reminder() is True
 
 
@@ -841,7 +919,7 @@ def test_home_page_greeting_and_new_scan_above_the_cards(qapp):
     heading = home.findChild(gui.QLabel, "homeHeading")
     assert heading.text() == "Welcome back, dev"
     cards = home.findChildren(gui.ModuleCard)
-    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Findings", "Scan History", "Reports"]
+    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Findings", "Reports"]
 
     home.resize(1200, 800)
     home.show()
@@ -862,13 +940,11 @@ def test_home_buttons_emit_their_signals(qapp):
     got = []
     home.new_scan_requested.connect(lambda: got.append("new"))
     home.findings_requested.connect(lambda: got.append("findings"))
-    home.history_requested.connect(lambda: got.append("history"))
     home.reports_requested.connect(lambda: got.append("reports"))
     home.new_scan_btn.click()
-    cards = home.findChildren(gui.ModuleCard)
-    for card in cards:
+    for card in home.findChildren(gui.ModuleCard):
         card.click()
-    assert got == ["new", "findings", "history", "reports"]
+    assert got == ["new", "findings", "reports"]
 
 
 # Scan History
@@ -975,15 +1051,18 @@ def test_open_by_severity_and_cwe_helpers():
 def test_breadcrumbs_lead_back(qapp):
     window = MainWindow(QSettings())
     window.show_history()
-    window.history_page.breadcrumb.back_btn.click()
+    window.findings_page.breadcrumb.back_btn.click()
     assert window.stack.currentIndex() == window.HOME
     window.show_reports()
     window.reports_page.breadcrumb.back_btn.click()
     assert window.stack.currentIndex() == window.HOME
-    window.open_record(0)
+
+    window.open_record(0)  # from the Scan runs tab
     assert window.scan_page.breadcrumb.current.text() == window.history[0].repo
+    assert window.scan_page.breadcrumb.back_btn.text() == "← Findings"
     window.scan_page.breadcrumb.back_btn.click()
-    assert window.stack.currentIndex() == window.HISTORY
+    assert window.stack.currentIndex() == window.FINDINGS
+    assert window.findings_page.tabs.currentIndex() == 1
     window.new_scan()
     assert window.scan_page.breadcrumb.current.text() == "New scan"
 
@@ -1279,10 +1358,10 @@ def test_selected_row_keeps_its_colour_and_paints_with_the_delegate(qapp):
 def test_status_change_keeps_the_row_colour(qapp):
     from PyQt5.QtGui import QColor
     page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    page.fix_btn.click()
-    row = page._rows.index(finding)
-    assert page.table.item(row, 4).text() == "Fix proposed"
+    panel = open_finding(page, "VULN-005")
+    panel.accept_btn.click()
+    row = page._rows.index(panel.finding)
+    assert page.table.item(row, 4).text() == "Fix accepted"
     assert page.table.item(row, 4).background().color() == QColor(gui.SEVERITY_COLORS["High"][0])
 
 
@@ -1378,88 +1457,6 @@ def test_high_plus_text_is_a_deeper_red_than_high(qapp):
     assert tracker.counts["High+"].text() == "0"
 
 
-# Findings open a side panel when clicked
-
-def test_the_side_panel_starts_on_the_overview(qapp):
-    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    assert page.side.currentIndex() == 0
-    assert page.side.widget(1) is page.detail_scroll and page.detail_scroll.widget() is page.detail
-    assert page.side.width() == page.SIDE_WIDTH
-
-
-def test_a_scan_finishing_does_not_open_the_details_by_itself(qapp):
-    page = scan_with_findings(qapp)
-    assert page._current_finding() is not None  # the first row is selected
-    assert page.side.currentIndex() == 0
-
-
-def test_clicking_a_finding_opens_its_panel(qapp):
-    window = MainWindow(QSettings())
-    window.resize(1360, 900)
-    window.show()
-    window.new_scan()
-    page = window.scan_page
-    run_demo_scan(page)
-    page.banner.close_btn.click()
-    qapp.processEvents()
-
-    page.table.selectRow(1)
-    page._on_row_clicked(1, 0)
-    qapp.processEvents()
-    finding = page._current_finding()
-    assert page.side.currentIndex() == 1
-    assert finding.id in page.detail_heading.text()
-    window.close()
-
-
-def test_a_real_click_on_a_row_opens_the_panel(qapp):
-    from PyQt5.QtTest import QTest
-    window = MainWindow(QSettings())
-    window.resize(1360, 900)
-    window.show()
-    window.new_scan()
-    page = window.scan_page
-    run_demo_scan(page)
-    qapp.processEvents()
-    rect = page.table.visualItemRect(page.table.item(2, 2))
-    QTest.mouseClick(page.table.viewport(), Qt.LeftButton, pos=rect.center())
-    qapp.processEvents()
-    assert page._current_finding() is page._rows[2]
-    assert page.side.currentIndex() == 1
-    window.close()
-
-
-def test_the_panel_closes_with_the_x_and_with_a_new_scan(qapp):
-    page = scan_with_findings(qapp)
-    page._open_detail()
-    assert page.side.currentIndex() == 1
-    page.detail_close.click()
-    assert page.side.currentIndex() == 0
-
-    page._open_detail()
-    page.reset()
-    assert page.side.currentIndex() == 0
-
-
-def test_closing_the_panel_cancels_an_open_decision_form(qapp):
-    page = scan_with_findings(qapp)
-    page._open_detail()
-    page.accept_btn.click()
-    assert not page.decision_form.isHidden()
-    page.detail_close.click()
-    assert page.decision_form.isHidden()
-
-
-def test_actions_inside_the_panel_update_the_row(qapp):
-    page = scan_with_findings(qapp)
-    finding = select_finding(page, "VULN-005")
-    page._open_detail()
-    decide(page, "Accept", note="from the panel")
-    assert finding.status == "Accepted"
-    assert table_column(page, 4)[page._rows.index(finding)] == "Accepted"
-    assert "from the panel" in page.decision_label.text()
-
-
 # The small burndown opens the big one
 
 def test_clicking_the_small_chart_opens_the_big_one_for_that_repo(qapp):
@@ -1518,23 +1515,76 @@ def test_burndown_repo_key_falls_back_to_the_sample_repo():
     assert burndown_repo_key("github.com/anything") == "sample-org/sample-backend"
 
 
-# Findings board and Dispute
+# Findings board, tabs and Dispute
 
 def test_dispute_replaces_ignore_everywhere(qapp):
-    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
-    assert page.dispute_btn.text() == "Dispute" and not hasattr(page, "ignore_btn")
+    panel = gui.FindingPanel(replace(SAMPLE_FINDINGS[0]))
+    assert panel.dispute_btn.text() == "Dispute" and not hasattr(panel, "ignore_btn")
     assert "Handled elsewhere in the stack" in gui.DISPUTE_REASONS
     assert "Fix would break the system" in gui.DISPUTE_REASONS
-    assert not hasattr(gui, "IGNORE_REASONS")
-    assert "Dispute" in gui.GettingStartedBanner.STEPS[2]
+    assert not hasattr(gui, "IGNORE_REASONS") and not hasattr(gui, "ACCEPT_REASONS")
+    assert "Dispute" in gui.GettingStartedBanner.STEPS[2] and "Accept" in gui.GettingStartedBanner.STEPS[2]
 
 
 def test_status_groups_cover_every_sample_status():
     from gui.data.mock_data import STATUS_GROUPS, status_group
-    assert [status_group(s) for s in ("Open", "Fix proposed", "PR open", "Disputed", "Accepted", "Verified", "Merged")] == [
-        "Open", "In progress", "In progress", "Disputed", "Done", "Done", "Done"]
+    assert [status_group(s) for s in ("Open", "Fix proposed", "PR open", "Fix accepted", "Disputed", "Verified", "Merged")] == [
+        "Open", "In progress", "In progress", "In progress", "Disputed", "Done", "Done"]
     assert status_group("something new") == "Open"
     assert list(STATUS_GROUPS) == ["Open", "In progress", "Disputed", "Done"]
+
+
+def test_sort_keys_order_severity_location_and_status():
+    from gui.data.mock_data import finding_sort_key, severity_rank, status_rank
+    a = Finding("VULN-002", "Low", "b", "b/file.py:10", "Verified")
+    b = Finding("VULN-010", "High+", "a", "a/file.py:9", "Open")
+    c = Finding("VULN-003", "High", "c", "a/file.py:100", "Disputed")
+    by = lambda field: [f.id for f in sorted([a, b, c], key=lambda f: finding_sort_key(f, field))]
+    assert by("severity") == ["VULN-010", "VULN-003", "VULN-002"]  # High+ first, not alphabetical
+    assert by("location") == ["VULN-010", "VULN-003", "VULN-002"]  # path, then line as a number
+    assert by("status") == ["VULN-010", "VULN-003", "VULN-002"]  # open, disputed, done
+    assert by("id") == ["VULN-002", "VULN-003", "VULN-010"]  # VULN-10 after VULN-3
+    assert severity_rank("nonsense") > severity_rank("Informational")
+    assert status_rank("nonsense") > status_rank("Merged")
+    try:
+        finding_sort_key(a, "colour")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown field should raise")
+
+
+def test_scan_table_sorts_by_header_click(qapp):
+    page = scan_with_findings(qapp)
+    header = page.table.horizontalHeader()
+    default = [f.id for f in page._rows]
+    assert [f.severity for f in page._rows] == sorted((f.severity for f in page._rows), key=gui.SEVERITY_ORDER.index)
+
+    page._toggle_sort(3)  # Location, ascending
+    locations = [f.location for f in page._rows]
+    keys = [split_location(loc) for loc in locations]
+    assert keys == sorted(keys, key=lambda k: (k[0].casefold(), k[1]))
+    assert header.isSortIndicatorShown() and header.sortIndicatorSection() == 3
+    assert table_column(page, 3) == locations  # the table shows the sorted rows
+
+    page._toggle_sort(3)  # again: descending
+    assert page._sort_order == Qt.DescendingOrder and page._rows[0].location == max(
+        locations, key=lambda l: (split_location(l)[0].casefold(), split_location(l)[1]))
+
+    page._toggle_sort(4)  # Status
+    from gui.data.mock_data import status_rank
+    assert [status_rank(f.status) for f in page._rows] == sorted(status_rank(f.status) for f in page._rows)
+
+    page._clear_sort()
+    assert [f.id for f in page._rows] == default and not header.isSortIndicatorShown()
+
+
+def test_sorting_closes_the_details_and_keeps_the_selection(qapp):
+    page = scan_with_findings(qapp)
+    open_finding(page, "VULN-005")
+    page._toggle_sort(0)
+    assert page.panel is None and page.table.rowCount() == len(SAMPLE_FINDINGS)
+    assert page._current_finding().id == "VULN-005"
 
 
 def test_board_lists_the_latest_scan_of_each_repo(qapp):
@@ -1547,9 +1597,26 @@ def test_board_lists_the_latest_scan_of_each_repo(qapp):
     assert page.table.rowCount() == expected == 8
     assert page.repo_filter.count() == 1 + len(latest)
     assert sum(int(v.text()) for v in page.group_values.values()) == expected
-    # worst severity first
     severities = [page.table.item(r, 1).text() for r in range(page.table.rowCount())]
     assert severities == sorted(severities, key=gui.SEVERITY_ORDER.index)
+    assert [page.table.horizontalHeaderItem(c).text() for c in range(page.table.columnCount())] == [
+        "ID", "Severity", "Finding", "Repository", "Location", "Status"]
+
+
+def test_board_sorts_by_header_click(qapp):
+    window = MainWindow(QSettings())
+    page = window.findings_page
+    page.refresh(window.history)
+    page._toggle_sort(4)  # Location
+    paths = [page.table.item(r, 4).text() for r in range(page.table.rowCount())]
+    keys = [(split_location(p)[0].casefold(), split_location(p)[1]) for p in paths]
+    assert keys == sorted(keys)
+    page._toggle_sort(4)
+    paths = [page.table.item(r, 4).text() for r in range(page.table.rowCount())]
+    keys = [(split_location(p)[0].casefold(), split_location(p)[1]) for p in paths]
+    assert keys == sorted(keys, reverse=True)
+    page._clear_sort()
+    assert not page.table.horizontalHeader().isSortIndicatorShown()
 
 
 def test_board_filters_and_cards_narrow_the_list(qapp):
@@ -1578,43 +1645,75 @@ def test_board_filters_and_cards_narrow_the_list(qapp):
     assert page.empty.isHidden()
 
 
-def test_choosing_a_finding_opens_its_scan_with_the_panel_open(qapp):
+def test_findings_page_has_two_tabs_and_holds_the_scan_runs(qapp):
+    window = MainWindow(QSettings())
+    page = window.findings_page
+    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["All findings", "Scan runs"]
+    assert page.pages.widget(1) is window.history_page
+    assert window.history_page.breadcrumb.isHidden() and window.history_page.title.isHidden()
+    window.show_history()
+    assert window.stack.currentIndex() == window.FINDINGS and page.tabs.currentIndex() == 1
+    window.show_findings()
+    assert page.tabs.currentIndex() == 0
+    window.home_page.findings_requested.emit()
+    assert window.stack.currentIndex() == window.FINDINGS
+
+
+def test_choosing_a_finding_opens_its_scan_with_the_details_open(qapp):
     window = MainWindow(QSettings())
     window.show_findings()
     page = window.findings_page
-    assert window.stack.currentIndex() == window.FINDINGS
     row = next(r for r, (_i, _repo, f) in enumerate(page._shown) if f.id == "VULN-005")
     page._choose(row, 0)
 
     assert window.stack.currentIndex() == window.SCAN
-    assert window.scan_page._current_finding().id == "VULN-005"
-    assert window.scan_page.side.currentIndex() == 1
-    assert window.scan_page.breadcrumb.back_btn.text() == "← Findings"
+    assert window.scan_page._expanded.id == "VULN-005" and window.scan_page.panel is not None
     window.scan_page.breadcrumb.back_btn.click()
-    assert window.stack.currentIndex() == window.FINDINGS
-    window.open_record(0)
-    assert window.scan_page.breadcrumb.back_btn.text() == "← Scan History"
+    assert window.stack.currentIndex() == window.FINDINGS and page.tabs.currentIndex() == 0
 
 
 def test_a_dispute_shows_up_on_the_board(qapp):
     window = MainWindow(QSettings())
     window.show_findings()
-    window.findings_page._choose(0, 0)
-    page = window.scan_page
-    finding = page._current_finding()
-    decide(page, "Dispute", reason_index=2, note="Would break the cluster")
+    board = window.findings_page
+    row = next(r for r, (_i, _repo, f) in enumerate(board._shown) if f.status == "Open")
+    board._choose(row, 0)
+    panel = window.scan_page.panel
+    finding = panel.finding
+    dispute(panel, reason_index=3, note="Would break the cluster")
     assert (finding.status, finding.reason) == ("Disputed", "Fix would break the system")
 
     window.show_findings()
     board = window.findings_page
     assert int(board.group_values["Disputed"].text()) == 1
     board.status_filter.setCurrentText("Disputed")
-    assert board.table.rowCount() == 1 and board.table.item(0, 4).text() == "Disputed"
+    assert board.table.rowCount() == 1 and board.table.item(0, 5).text() == "Disputed"
 
 
-def test_home_findings_card_opens_the_board(qapp):
-    window = MainWindow(QSettings())
-    window.home_page.findings_requested.emit()
-    assert window.stack.currentIndex() == window.FINDINGS
-    window.findings_page.breadcrumb.back_btn.click()
-    assert window.stack.currentIndex() == window.HOME
+def test_the_eye_in_the_api_key_field_shows_and_hides_the_key(qapp):
+    from gui.api_conn_page import ApiConnectorPage
+    from PyQt5.QtWidgets import QLineEdit
+    page = ApiConnectorPage()
+    assert page.api_key.echoMode() == QLineEdit.Password
+    assert page.show_key.isCheckable() and page.show_key.toolTip() == "Show the key"
+    page.show_key.trigger()
+    assert page.api_key.echoMode() == QLineEdit.Normal and page.show_key.toolTip() == "Hide the key"
+    page.show_key.trigger()
+    assert page.api_key.echoMode() == QLineEdit.Password
+    assert not page.show_key.icon().isNull()
+
+
+def test_reports_cards_wrap_when_the_window_is_narrow(qapp):
+    reports = gui.ReportsPage()
+    reports.resize(700, 800)
+    reports._arrange_cards()
+    assert {reports.strip.getItemPosition(i)[0] for i in range(4)} == {0, 1}  # two rows of two
+    assert reports.minimumSizeHint().width() < 1000  # nothing forces the page wide
+    reports.resize(1300, 800)
+    reports._arrange_cards()
+    assert {reports.strip.getItemPosition(i)[0] for i in range(4)} == {0}  # one row of four
+
+
+def test_report_tabs_have_room_for_their_labels(qapp):
+    assert "padding: 8px 16px" in gui.STYLE.split("QTabBar::tab {")[1].split("}")[0]
+    assert "font-weight" not in gui.STYLE.split("QTabBar::tab {")[1].split("}")[0]

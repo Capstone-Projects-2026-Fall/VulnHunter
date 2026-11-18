@@ -21,7 +21,7 @@ class Finding:
     status: str
     cwe: str = ""
     issue: int = 0  # GitHub issue number in the scanned repo, 0 if none
-    decision: str = ""  # "Accepted" or "Disputed" once a reviewer has decided (mock only)
+    decision: str = ""  # "Disputed" once a reviewer has decided (mock only)
     reason: str = ""
     note: str = ""
 
@@ -132,7 +132,7 @@ def scan_output(model_label):
 SCAN_TOKENS = "1.75M"
 SCAN_DURATION = "19 min"
 
-# Mocked Fix / Accept / Dispute. Nothing here touches a repository.
+# Mocked Accept fix / Dispute / Verify. Nothing here touches a repository.
 # Sample fix summaries by weakness type, echoing the fix strategies in SAMPLE_OUTPUT.
 SAMPLE_FIXES = {
     "CWE-78": "Pass the command and its arguments as a list instead of building a shell string, "
@@ -146,7 +146,6 @@ SAMPLE_FIXES = {
 }
 DEFAULT_SAMPLE_FIX = "Review the flagged line and apply the recommended remediation."
 
-ACCEPT_REASONS = ["Fix looks correct", "Tests cover the change", "Low risk change", "Other"]
 DISPUTE_REASONS = ["False positive", "Handled elsewhere in the stack", "Fix would break the system",
                    "Accepted risk", "Not reachable in production", "Duplicate", "Other"]
 
@@ -335,8 +334,8 @@ def cwe_url(cwe):
     return f"https://cwe.mitre.org/data/definitions/{match.group(1)}.html" if match else ""
 
 
-# A finding is closed once its fix is merged or verified, or a reviewer accepted or disputed it.
-CLOSED_STATUSES = ("Merged", "Verified", "Accepted", "Disputed")
+# A finding is closed once its fix is merged or verified, or a reviewer disputed it.
+CLOSED_STATUSES = ("Merged", "Verified", "Disputed")
 
 
 def is_open(finding):
@@ -362,9 +361,9 @@ def sample_repo_findings(repo=ALL_REPOS):
 # The findings board groups the statuses a finding can have into four columns of work.
 STATUS_GROUPS = {
     "Open": ("Open",),
-    "In progress": ("Fix proposed", "PR open"),
+    "In progress": ("Fix proposed", "PR open", "Fix accepted"),
     "Disputed": ("Disputed",),
-    "Done": ("Accepted", "Verified", "Merged"),
+    "Done": ("Verified", "Merged"),
 }
 
 
@@ -381,3 +380,58 @@ def latest_scan_indexes(records):
     for index, record in enumerate(records):
         latest.setdefault(record.repo, index)
     return latest
+
+
+# SAMPLE TEXT (invented for the demo): what is wrong and what an attacker can do, by weakness type.
+SAMPLE_ISSUES = {
+    "CWE-78": ("A value from the caller is placed into a shell command, so characters in it run as commands.",
+               "Run arbitrary commands on the machine that runs this code."),
+    "CWE-22": ("The output path is built from caller input without checking where it ends up.",
+               "Create or overwrite files outside the intended folder."),
+    "CWE-400": ("The request body has no size limit.",
+                "Send very large requests to use up memory and take the service down."),
+    "CWE-494": ("A file is downloaded over an unverified connection and used without a checksum.",
+                "Swap the download for malicious content that the tool then trusts."),
+    "CWE-798": ("A secret key is written into the source code.",
+                "Read the key from the code and call the service as the app."),
+}
+DEFAULT_SAMPLE_ISSUE = ("The flagged code can be abused by an attacker-controlled input.",
+                        "Misuse the flagged code path.")
+
+
+def sample_issue(finding):
+    """(what is wrong, what an attacker can do) for a finding. Sample text, not scanner output."""
+    return SAMPLE_ISSUES.get(finding.cwe, DEFAULT_SAMPLE_ISSUE)
+
+
+# Sorting for the findings tables.
+def severity_rank(severity):
+    return SEVERITY_ORDER.index(severity) if severity in SEVERITY_ORDER else len(SEVERITY_ORDER)
+
+
+def status_rank(status):
+    """Open work first, then in progress, disputed, done."""
+    order = [s for statuses in STATUS_GROUPS.values() for s in statuses]
+    return order.index(status) if status in order else len(order)
+
+
+def _natural(text):
+    return tuple(int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text.casefold()))
+
+
+def finding_sort_key(finding, field, repo=""):
+    """Sort key for one column: id, severity, title, location, status or repo."""
+    if field == "id":
+        return _natural(finding.id)
+    if field == "severity":
+        return (severity_rank(finding.severity), _natural(finding.id))
+    if field == "title":
+        return (finding.title.casefold(), _natural(finding.id))
+    if field == "location":
+        path, line = split_location(finding.location)
+        return (path.casefold(), line, _natural(finding.id))
+    if field == "status":
+        return (status_rank(finding.status), severity_rank(finding.severity), _natural(finding.id))
+    if field == "repo":
+        return (repo.casefold(), severity_rank(finding.severity), _natural(finding.id))
+    raise ValueError(f"unknown sort field: {field}")

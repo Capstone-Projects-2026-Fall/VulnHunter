@@ -4,8 +4,8 @@ Pick a provider, paste an API key, press Connect. The key is verified with a
 tiny test request; on success the tab reports "Connected" and tells the rest
 of the app. Keys are kept in memory for the session only, never written to disk.
 """
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QPointF, QRectF, Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QVBoxLayout, QWidget,
@@ -21,6 +21,28 @@ PROVIDERS = {
 }
 
 GREEN, RED, BLUE, MUTED = "#4ADE80", "#F87171", "#38BDF8", "#7F93AD"
+
+
+def eye_icon(slashed):
+    """A small eye (key hidden) or a crossed-out eye (key visible), drawn so no icon font is needed."""
+    size = 20
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(MUTED), 1.6)
+    pen.setCapStyle(Qt.RoundCap)
+    painter.setPen(pen)
+    outline = QPainterPath()
+    outline.moveTo(2, 10)
+    outline.quadTo(10, 1, 18, 10)
+    outline.quadTo(10, 19, 2, 10)
+    painter.drawPath(outline)
+    painter.drawEllipse(QPointF(10, 10), 2.8, 2.8)
+    if slashed:
+        painter.drawLine(QPointF(3.5, 17), QPointF(16.5, 3))
+    painter.end()
+    return QIcon(pixmap)
 
 
 class ConnectWorker(QThread):
@@ -88,12 +110,13 @@ class ApiConnectorPage(QWidget):
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("Paste your API key")
         self.api_key.returnPressed.connect(self.connect_clicked)
-        self.show_key = QCheckBox("Show")
-        self.show_key.toggled.connect(
-            lambda on: self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+        # An eye inside the field shows or hides the key.
+        self.show_key = self.api_key.addAction(eye_icon(False), QLineEdit.TrailingPosition)
+        self.show_key.setCheckable(True)
+        self.show_key.setToolTip("Show the key")
+        self.show_key.toggled.connect(self._on_show_key_toggled)
         key_row = QHBoxLayout()
         key_row.addWidget(self.api_key, 1)
-        key_row.addWidget(self.show_key)
 
         self.model_id = QLineEdit()
         self.base_url = QLineEdit()
@@ -158,6 +181,11 @@ class ApiConnectorPage(QWidget):
 
         self._load_form("claude")
         self._refresh_state()
+
+    def _on_show_key_toggled(self, on):
+        self.api_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password)
+        self.show_key.setIcon(eye_icon(on))
+        self.show_key.setToolTip("Hide the key" if on else "Show the key")
 
     def set_compact(self, compact):
         """Compact (inside the popover under the status pill): no title or subtitle, no outer margin."""
