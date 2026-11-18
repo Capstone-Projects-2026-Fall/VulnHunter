@@ -1,3 +1,4 @@
+import math
 import random
 import re
 import sys
@@ -10,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import QEvent, QPointF, QRectF, QSettings, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QConicalGradient, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -29,17 +30,23 @@ from llm_connector.conn_all_llm import LLMConnector
 from gui.api_conn_page import ApiConnectorPage
 
 STYLE = """
-QWidget { color: #E6EEF8; font-size: 18px; }
+QWidget {
+    color: #E6EEF8; font-size: 18px;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+}
 QMainWindow, QWidget#root { background: #0A1424; }
-QDialog, QMessageBox { background: #111E33; }
-QFrame#header { background: #0F2747; border: 0; border-bottom: 1px solid #1F4E8C; }
-QFrame#card { background: #111E33; border: 1px solid #243B5C; border-radius: 5px; }
+QDialog, QMessageBox { background: #0F1C31; }
+QToolTip { background: #13233C; color: #E6EEF8; border: 1px solid #223A5A; padding: 6px 8px; }
+QFrame#header { background: #0A1424; border: 0; border-bottom: 1px solid #16273F; }
+QFrame#card { background: #0F1C31; border: 1px solid #1B2F4B; border-radius: 14px; }
 QFrame#card QLabel { background: transparent; }
-QLabel#severityHeading { font-size: 12px; font-weight: 600; }
-QLabel#severityHeadline { font-size: 18px; font-weight: 600; }
-QLabel#severityDetail { font-size: 11px; }
-QLabel#statsTitle { font-size: 32px; font-weight: 600; }
-QLabel#cardValue { font-size: 18px; font-weight: 600; }
+QFrame#popupCard { background: #0F1C31; border: 1px solid #2A4468; border-radius: 18px; }
+QFrame#popupCard QLabel { background: transparent; }
+QLabel#severityHeading { font-size: 16px; font-weight: 600; color: #8CA3C0; }
+QLabel#severityHeadline { font-size: 16px; font-weight: 600; }
+QLabel#severityDetail { font-size: 16px; }
+QLabel#statsTitle { font-size: 28px; font-weight: 600; }
+QLabel#cardValue { font-size: 26px; font-weight: 600; }
 QPushButton#home {
     background: transparent; border: 0; color: #E6EEF8; font-size: 20px;
     font-weight: 600; padding: 0 12px;
@@ -54,60 +61,69 @@ QPushButton#backNavigation:hover, QPushButton#forwardNavigation:hover {
 QPushButton#backNavigation:disabled, QPushButton#forwardNavigation:disabled {
     color: #52647B; background: transparent;
 }
-QLabel#title { font-size: 24px; font-weight: 600; }
-QLabel#muted { color: #7F93AD; }
+QLabel#title { font-size: 28px; font-weight: 600; }
+QLabel#muted { color: #8CA3C0; }
 QLabel#statusPill {
     font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 13px;
-    border: 1px solid #243B5C; background: #0D2646; color: #9FB3CC;
+    border: 1px solid #223A5A; background: #0D2646; color: #9FB3CC;
 }
 QLabel#statusPill[state="off"] { color: #F5C451; border-color: #6B5A1F; background: #2A2410; }
 QLabel#statusPill[state="ok"] { color: #4ADE80; border-color: #1F5A38; background: #0F2A1C; }
 QLabel#statusPill[state="error"] { color: #F87171; border-color: #6B2A2A; background: #2A1010; }
 QLabel#sampleTag {
-    font-size: 13px; color: #9FB3CC; border: 1px solid #243B5C; border-radius: 11px;
+    font-size: 13px; color: #9FB3CC; border: 1px solid #223A5A; border-radius: 11px;
     padding: 2px 10px; background: transparent;
 }
 QPushButton#gear {
     background: transparent; border: 0; color: #9FB3CC; font-size: 26px; padding: 0;
     min-width: 36px; max-width: 36px;
 }
-QPushButton#gear:hover { color: #38BDF8; }
+QPushButton#gear:hover { color: #38BDF8; background: transparent; }
 QLabel#popupTitle { font-size: 22px; font-weight: 600; }
-QLabel#phrase { font-size: 20px; }
+QLabel#phrase { font-size: 22px; font-weight: 500; }
 QPushButton#link {
     background: transparent; border: 0; padding: 0; color: #38BDF8; text-decoration: underline;
 }
-QPushButton#link:hover { color: #7DD3FC; }
-QCheckBox { background: transparent; }
+QPushButton#link:hover { color: #7DD3FC; background: transparent; }
+QCheckBox { background: transparent; spacing: 8px; }
 QLineEdit, QComboBox {
-    background: #111E33; border: 1px solid #243B5C; border-radius: 5px; padding: 8px 10px;
+    background: #0F1C31; border: 1px solid #223A5A; border-radius: 10px; padding: 10px 14px;
 }
 QLineEdit:focus, QComboBox:focus { border: 1px solid #38BDF8; }
 QComboBox QAbstractItemView {
-    background: #111E33; color: #E6EEF8; selection-background-color: #1B4B7A;
-    selection-color: #E6EEF8; border: 1px solid #243B5C;
+    background: #0F1C31; color: #E6EEF8; selection-background-color: #173553;
+    selection-color: #E6EEF8; border: 1px solid #223A5A; outline: 0;
 }
 QPushButton {
-    background: #111E33; border: 1px solid #243B5C; border-radius: 5px; padding: 9px 22px;
+    background: #13233C; border: 1px solid #223A5A; border-radius: 10px; padding: 10px 20px;
 }
-QPushButton:hover { background: #172A47; }
-QPushButton:disabled { color: #7F93AD; background: #0A1424; }
+QPushButton:hover { background: #19304F; }
+QPushButton:disabled { color: #6B7F99; background: #0C1829; border-color: #16273F; }
 QPushButton#primary { background: #38BDF8; color: #05101F; border: 0; font-weight: 600; }
 QPushButton#primary:hover { background: #7DD3FC; }
-QPushButton#primary:disabled { background: #243B5C; color: #7F93AD; }
+QPushButton#primary:disabled { background: #1E3A5C; color: #6B7F99; }
 QTableWidget {
-    background: #111E33; border: 1px solid #243B5C; gridline-color: #243B5C;
-    selection-background-color: #1B4B7A; selection-color: #E6EEF8;
+    background: #0F1C31; border: 1px solid #1B2F4B; border-radius: 14px;
+    gridline-color: transparent; selection-background-color: #173553;
+    selection-color: #E6EEF8; outline: 0;
 }
-QHeaderView::section { background: #172A47; border: 0; padding: 9px 12px; font-weight: 600; }
+QTableWidget::item { padding: 8px 12px; border-bottom: 1px solid #15263F; }
+QTableWidget::item:selected { background: #173553; color: #E6EEF8; }
+QHeaderView { background: #0F1C31; border: 0; }
+QHeaderView::section {
+    background: transparent; color: #8CA3C0; border: 0; border-bottom: 1px solid #1B2F4B;
+    padding: 12px 14px; font-weight: 600; font-size: 16px;
+}
+QTableCornerButton::section { background: transparent; border: 0; }
 QPlainTextEdit {
-    background: #08101D; border: 1px solid #243B5C; color: #E6EEF8;
-    font-family: Consolas; font-size: 10px;
+    background: #08111F; border: 1px solid #1B2F4B; border-radius: 12px; color: #D5E1F2;
+    padding: 8px 10px; font-size: 15px;
+    font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
 }
-QScrollBar:vertical { background: #111E33; width: 12px; margin: 0; }
-QScrollBar::handle:vertical { background: #243B5C; border-radius: 5px; min-height: 24px; }
-QScrollBar:horizontal { background: #111E33; height: 12px; margin: 0; }
-QScrollBar::handle:horizontal { background: #243B5C; border-radius: 5px; min-width: 24px; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar::handle:vertical { background: #223A5A; border-radius: 4px; min-height: 28px; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:horizontal { background: #223A5A; border-radius: 4px; min-width: 28px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 """
 
@@ -146,6 +162,8 @@ def make_table(headers):
     table.setHorizontalHeaderLabels(headers)
     table.verticalHeader().setVisible(False)
     table.setWordWrap(True)
+    table.setShowGrid(False)
+    table.horizontalHeader().setHighlightSections(False)
     table.setSelectionBehavior(QAbstractItemView.SelectRows)
     table.setSelectionMode(QAbstractItemView.SingleSelection)
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -204,11 +222,11 @@ HOME_QSS = """
 
 /* module cards */
 #moduleCard {
-    background: #0d2646; border: 1px solid #16365f;
-    border-radius: 14px; text-align: left;
+    background: #0f1c31; border: 1px solid #1b2f4b;
+    border-radius: 18px; text-align: left;
 }
-#moduleCard:hover   { background: #123560; border: 1px solid #38bdf8; }
-#moduleCard:pressed { background: #0a1f3a; }
+#moduleCard:hover   { background: #13253f; border: 1px solid #2c4a73; }
+#moduleCard:pressed { background: #0c182a; }
 #homePage QLabel#cardIcon {
     font-family: "Segoe UI Symbol", "Segoe UI";
     font-size: 24px; color: #38bdf8;
@@ -596,6 +614,14 @@ class HistoryPage(QWidget):
         if item is not None:
             self.record_selected.emit(item.data(Qt.UserRole))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.table.resizeRowsToContents()  # column widths are final now, so wrapped rows get the right height
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.table.resizeRowsToContents()
+
     @staticmethod
     def _sort_key(record, column):
         values = [record.repo, record.model, record.mode, record.date,
@@ -768,16 +794,21 @@ class StatusPill(QLabel):
         self.setText(f'<span style="color:{colour}">●</span>&nbsp;&nbsp;{label}')
 
 
-class BusyBar(QWidget):
-    """A thin bar with a chunk sliding along it, for work of unknown length."""
+class RadarSpinner(QWidget):
+    """A radar sweep that circles while a scan runs."""
+    # (x, y as fractions of the radius, dot size)
+    DOTS = ((-0.42, -0.32, 6), (0.32, 0.24, 5), (-0.34, 0.56, 8))
 
-    def __init__(self):
+    def __init__(self, size=96):
         super().__init__()
-        self.setFixedHeight(6)
-        self._pos = 0.0
+        self.setFixedSize(size, size)
+        self._angle = 40.0  # degrees, counter-clockwise from 3 o'clock
         self._timer = QTimer(self)
-        self._timer.setInterval(30)
+        self._timer.setInterval(25)
         self._timer.timeout.connect(self._tick)
+
+    def is_spinning(self):
+        return self._timer.isActive()
 
     def showEvent(self, event):
         self._timer.start()
@@ -788,21 +819,84 @@ class BusyBar(QWidget):
         super().hideEvent(event)
 
     def _tick(self):
-        self._pos = (self._pos + 0.02) % 1.0
+        self._angle = (self._angle - 4.0) % 360.0  # clockwise
         self.update()
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        track = QPainterPath()
-        track.addRoundedRect(QRectF(self.rect()), 3, 3)
-        p.fillPath(track, QColor("#243B5C"))
-        p.setClipPath(track)
-        chunk = self.width() * 0.35
-        x = -chunk + self._pos * (self.width() + chunk)
-        p.setBrush(QColor("#38BDF8"))
+        radius = min(self.width(), self.height()) / 2 - 3
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        disc = QPainterPath()
+        disc.addEllipse(centre, radius, radius)
+        p.fillPath(disc, QColor("#16294A"))
+
+        p.setPen(QPen(QColor("#3B5575"), 2))
+        p.setBrush(Qt.NoBrush)
+        for fraction in (1.0, 0.66, 0.33):
+            p.drawEllipse(centre, radius * fraction, radius * fraction)
+        p.drawLine(QPointF(centre.x(), centre.y() - radius), QPointF(centre.x(), centre.y() + radius))
+        p.drawLine(QPointF(centre.x() - radius, centre.y()), QPointF(centre.x() + radius, centre.y()))
+
+        # The fading trail behind the sweep arm.
+        p.save()
+        p.setClipPath(disc)
+        trail = QConicalGradient(centre, self._angle)
+        trail.setColorAt(0.0, QColor(150, 205, 230, 170))
+        trail.setColorAt(0.22, QColor(110, 160, 190, 0))
+        trail.setColorAt(1.0, QColor(110, 160, 190, 0))
         p.setPen(Qt.NoPen)
-        p.drawRoundedRect(QRectF(x, 0, chunk, self.height()), 3, 3)
+        p.setBrush(QBrush(trail))
+        p.drawEllipse(centre, radius, radius)
+        p.restore()
+
+        # Dots light up as the arm passes over them, then fade.
+        for dx, dy, size in self.DOTS:
+            dot_angle = math.degrees(math.atan2(-dy, dx)) % 360
+            behind = (dot_angle - self._angle) % 360
+            alpha = max(70, int(255 * (1 - behind / 360)))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(200, 85, 61, alpha))
+            p.drawEllipse(QPointF(centre.x() + dx * radius, centre.y() + dy * radius), size / 2, size / 2)
+
+        angle = math.radians(self._angle)
+        tip = QPointF(centre.x() + radius * math.cos(angle), centre.y() - radius * math.sin(angle))
+        p.setPen(QPen(QColor("#A9D1E0"), 4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(centre, tip)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#A9D1E0"))
+        p.drawEllipse(centre, 5, 5)
+
+
+class BottomPopup(QDialog):
+    """A frameless card that appears at the bottom centre of the main window, clear of the content."""
+    MARGIN = 28
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QDialog { background: transparent; }")
+        self.card = QFrame(self)
+        self.card.setObjectName("popupCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.card)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.adjustSize()
+        self.place_at_bottom()
+
+    def place_at_bottom(self):
+        parent = self.parentWidget()
+        anchor = parent.window() if parent is not None else None
+        if anchor is None:
+            return
+        origin = anchor.mapToGlobal(QPoint(0, 0))
+        x = origin.x() + (anchor.width() - self.width()) // 2
+        y = origin.y() + anchor.height() - self.height() - self.MARGIN
+        self.move(x, y)
 
 
 class PhraseRotator:
@@ -883,45 +977,41 @@ class ApiSettingsDialog(QDialog):
         layout.addLayout(footer)
 
 
-class ScanProgressDialog(QDialog):
-    """Popup shown while a scan runs: the phase, a rotating phrase, and a Cancel button."""
+class ScanProgressDialog(BottomPopup):
+    """Popup shown while a scan runs: a radar sweep, the current phrase, and a Cancel button."""
     cancelled = pyqtSignal()
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Scanning")
         self.setWindowModality(Qt.WindowModal)
-        self.setMinimumWidth(520)
+        self.setFixedWidth(580)
         self._quiet = False
+        self.phase_index = 0
 
-        title = QLabel("Scanning for vulnerabilities")
-        title.setObjectName("popupTitle")
-        self.phase_label = QLabel()
-        self.phase_label.setObjectName("muted")
-        self.bar = BusyBar()
+        self.spinner = RadarSpinner()
         self.phrase_label = QLabel()
         self.phrase_label.setObjectName("phrase")
+        self.phrase_label.setWordWrap(True)
         note = QLabel("Sample data replay")
         note.setObjectName("muted")
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
 
-        footer = QHBoxLayout()
-        footer.addWidget(note)
-        footer.addStretch()
-        footer.addWidget(self.cancel_btn)
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.addWidget(title)
-        layout.addWidget(self.phase_label)
-        layout.addSpacing(4)
-        layout.addWidget(self.bar)
-        layout.addWidget(self.phrase_label)
-        layout.addSpacing(8)
-        layout.addLayout(footer)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        text.addStretch()
+        text.addWidget(self.phrase_label)
+        text.addWidget(note)
+        text.addStretch()
+        row = QHBoxLayout(self.card)
+        row.setContentsMargins(22, 18, 22, 18)
+        row.setSpacing(20)
+        row.addWidget(self.spinner)
+        row.addLayout(text, 1)
+        row.addWidget(self.cancel_btn, 0, Qt.AlignVCenter)
 
     def set_phase(self, index):
-        self.phase_label.setText(f"Phase {index + 1} of {len(SCAN_PHASES)}: {SCAN_PHASES[index]}")
+        self.phase_index = index
 
     def set_phrase(self, text):
         self.phrase_label.setText(text)
@@ -937,8 +1027,10 @@ class ScanProgressDialog(QDialog):
         super().reject()
 
 
-class ScanResultDialog(QDialog):
-    """Result card shown when a scan finishes: red, amber or green, with a count per severity."""
+class ScanResultDialog(BottomPopup):
+    """Result card shown when a scan finishes: red, amber or green, with a count per severity.
+    All its text is one size."""
+    TEXT_SIZE = 18
     BANNERS = {  # level: (background, border, text colour, icon)
         "high": ("#2A1010", "#6B2A2A", "#F87171", "⚠"),
         "other": ("#2A2410", "#6B5A1F", "#F5C451", "⚠"),
@@ -950,9 +1042,8 @@ class ScanResultDialog(QDialog):
 
     def __init__(self, parent, findings):
         super().__init__(parent)
-        self.setWindowTitle("Scan complete")
-        self.setWindowModality(Qt.WindowModal)
-        self.setMinimumWidth(460)
+        self.setWindowModality(Qt.NonModal)  # the table behind stays usable
+        self.setFixedWidth(580)
         self.level = result_level(findings)
         background, border, colour, icon = self.BANNERS[self.level]
         count = len(findings)
@@ -960,12 +1051,13 @@ class ScanResultDialog(QDialog):
             text = "No vulnerabilities found"
         else:
             text = f"{count} {'vulnerability' if count == 1 else 'vulnerabilities'} detected"
+        size = f"font-size: {self.TEXT_SIZE}px;"
 
         banner = QFrame()
-        banner.setStyleSheet(f"background: {background}; border: 1px solid {border}; border-radius: 6px;")
+        banner.setStyleSheet(f"background: {background}; border: 1px solid {border}; border-radius: 12px;")
         self.banner_label = QLabel(f"{icon}  {text}")
         self.banner_label.setStyleSheet(
-            f"color: {colour}; font-size: 22px; font-weight: 600; border: 0; background: transparent;")
+            f"color: {colour}; {size} font-weight: 600; border: 0; background: transparent;")
         banner_box = QVBoxLayout(banner)
         banner_box.setContentsMargins(16, 12, 16, 12)
         banner_box.addWidget(self.banner_label)
@@ -977,13 +1069,13 @@ class ScanResultDialog(QDialog):
             chip_bg, chip_fg = self.CHIPS.get(tier, self.DEFAULT_CHIP)
             chip = QLabel(f"{n} {tier}")
             chip.setStyleSheet(
-                f"background: {chip_bg}; color: {chip_fg}; border-radius: 10px; padding: 2px 10px; font-size: 15px;")
+                f"background: {chip_bg}; color: {chip_fg}; border-radius: 12px; padding: 3px 12px; {size}")
             chips.addWidget(chip)
             self.chips.append(chip)
         chips.addStretch()
 
         note = QLabel("Sample results")
-        note.setObjectName("muted")
+        note.setStyleSheet(f"color: #8CA3C0; {size} background: transparent;")
         self.close_btn = QPushButton("Close")
         self.close_btn.clicked.connect(self.reject)
         self.view_btn = QPushButton("View findings")
@@ -996,12 +1088,13 @@ class ScanResultDialog(QDialog):
         footer.addWidget(self.close_btn)
         footer.addWidget(self.view_btn)
 
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self.card)
+        layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
         layout.addWidget(banner)
         if self.chips:
             layout.addLayout(chips)
-        layout.addSpacing(6)
+        layout.addSpacing(4)
         layout.addLayout(footer)
 
 
@@ -1066,8 +1159,9 @@ class ScanPage(QWidget):
         chart_box.setSpacing(2)
         chart_heading = QLabel("This repo")
         chart_heading.setObjectName("severityHeading")
-        chart_note = QLabel("Open findings, sample data")
+        chart_note = QLabel("Open findings (sample)")
         chart_note.setObjectName("severityDetail")
+        chart_note.setWordWrap(True)
         chart_box.addWidget(chart_heading)
         chart_box.addWidget(self.repo_chart, 1)
         chart_box.addWidget(chart_note)
@@ -1182,6 +1276,14 @@ class ScanPage(QWidget):
         show = self.output.isHidden()
         self.output.setVisible(show)
         self.log_toggle.setText("▾ Scan log" if show else "▸ Scan log")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.table.resizeRowsToContents()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.table.resizeRowsToContents()
 
     def _set_inputs_editable(self, editable):
         self.repo.setReadOnly(not editable)
@@ -1675,6 +1777,7 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)  # no '?' on dialogs
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()

@@ -24,7 +24,7 @@ from gui.data.mock_data import (
 )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def qapp():
     app = QApplication.instance()
     if app is None:
@@ -379,7 +379,7 @@ def test_main_window_zoom_shortcuts_scale_contents_not_window(qapp):
         window.zoom_in()
     assert (window.width(), window.height()) == initial_size
     assert window._zoom == window.MAX_ZOOM
-    assert f"QWidget {{ color: #E6EEF8; font-size: {round(18 * window._zoom)}px; }}" in window.styleSheet()
+    assert f"font-size: {round(18 * window._zoom)}px;" in window.styleSheet().split("QMainWindow")[0]
     qapp.processEvents()
     home_button = window.home_button
     assert "QPushButton#home { font-size: 20px; }" in window.styleSheet()
@@ -444,7 +444,7 @@ def test_zoom_shortcut_accepts_key_repeat(qapp):
 
 def test_base_font_size_is_larger_than_original():
     # Stakeholder asked for larger text than the original 14px.
-    assert "font-size: 18px" in gui.STYLE.splitlines()[1]
+    assert "font-size: 18px" in gui.STYLE.split("QMainWindow")[0]
 
 
 def test_main_window_defines_show_stats_once():
@@ -877,17 +877,16 @@ def test_scan_opens_a_popup_that_follows_the_phases(qapp):
     page.timer.stop()
     popup = page.progress
     assert popup is not None and popup.isVisible()
-    assert popup.phase_label.text() == "Phase 1 of 4: Recon"
+    assert popup.phase_index == 0
     assert popup.phrase_label.text() == SCAN_PHRASES[0][0] == "Detecting..."
 
     seen = []
     for _ in range(len(page._run_output)):
         page._next_line()
         if page.progress is not None:
-            seen.append(page.progress.phase_label.text())
-    assert "Phase 2 of 4: Hunt" in seen
-    assert "Phase 3 of 4: Verification" in seen
-    assert seen[-1] == "Phase 4 of 4: Report"
+            seen.append(page.progress.phase_index)
+    assert 1 in seen and 2 in seen  # hunt, then verification
+    assert seen[-1] == 3  # report
     assert popup.phrase_label.text() in SCAN_PHRASES[3]
 
     page._next_line()  # the run is over
@@ -969,3 +968,90 @@ def test_progress_popup_rotates_its_phrase_on_the_timer(qapp):
     assert after != before
     page.reset()
     assert page.progress is None
+
+
+# Radar spinner, popups at the bottom, calmer style
+
+def test_radar_spinner_turns_only_while_visible(qapp):
+    spinner = gui.RadarSpinner()
+    assert not spinner.is_spinning()
+    spinner.show()
+    assert spinner.is_spinning()
+    before = spinner._angle
+    spinner._tick()
+    assert spinner._angle != before
+    assert not spinner.grab().isNull()
+    spinner.hide()
+    assert not spinner.is_spinning()
+
+
+def test_scanning_popup_has_no_title_and_no_sliding_bar(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    page.start_scan()
+    page.timer.stop()
+    texts = {label.text() for label in page.progress.findChildren(gui.QLabel)}
+    assert "Scanning for vulnerabilities" not in texts
+    assert isinstance(page.progress.spinner, gui.RadarSpinner)
+    assert not hasattr(gui, "BusyBar")
+    page.reset()
+
+
+def test_popups_sit_at_the_bottom_centre_of_the_window(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    qapp.processEvents()
+    window.new_scan()
+    page = window.scan_page
+    page.start_scan()
+    page.timer.stop()
+    qapp.processEvents()
+    win = window.geometry()
+
+    box = page.progress.frameGeometry()
+    assert abs(box.center().x() - win.center().x()) <= 2
+    assert box.top() > win.center().y()
+    assert box.bottom() <= win.bottom()
+
+    for _ in range(len(page._run_output) + 1):
+        page._next_line()
+    qapp.processEvents()
+    card = page.result_dialog
+    box = card.frameGeometry()
+    assert box.top() > win.center().y() and box.bottom() <= win.bottom()
+    assert card.windowModality() == Qt.NonModal  # the findings stay clickable
+    window.close()
+
+
+def test_result_card_text_is_one_size(qapp):
+    import re
+    card = gui.ScanResultDialog(None, SAMPLE_FINDINGS)
+    sizes = {re.search(r"font-size: (\d+)px", label.styleSheet()).group(1)
+             for label in [card.banner_label] + card.chips}
+    assert sizes == {str(card.TEXT_SIZE)}
+
+
+def test_severity_panel_text_is_one_size():
+    for name in ("severityHeading", "severityHeadline", "severityDetail"):
+        assert f"QLabel#{name} {{ font-size: 16px" in gui.STYLE
+
+
+def test_log_text_is_readable_and_monospace():
+    block = gui.STYLE.split("QPlainTextEdit {")[1].split("}")[0]
+    assert "font-size: 15px" in block and "Consolas" in block
+
+
+def test_app_uses_one_clean_font_family():
+    assert "Segoe UI" in gui.STYLE.split("QMainWindow")[0]
+
+
+def test_equal_rows_get_equal_heights_once_the_page_is_shown(qapp):
+    window = MainWindow()
+    window.resize(1360, 900)
+    window.show()
+    window.show_history()
+    qapp.processEvents()
+    table = window.history_page.table
+    # The first two seeded scans have the same repository name, so they should be the same height.
+    assert table.rowHeight(0) == table.rowHeight(1)
+    window.close()

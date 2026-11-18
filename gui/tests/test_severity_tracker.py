@@ -14,7 +14,7 @@ from gui.main_gui import ScanPage, SeverityTracker
 from gui.data.mock_data import SEVERITY_ORDER, Finding
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def qapp():
     """One QApplication for the whole module (Qt only allows one)."""
     app = QApplication.instance()
