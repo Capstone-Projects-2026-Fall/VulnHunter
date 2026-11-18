@@ -61,6 +61,7 @@ class ConnectWorker(QThread):
 class ApiConnectorPage(QWidget):
     connected = pyqtSignal(str, str)  # provider key, display label
     disconnected = pyqtSignal()
+    connect_failed = pyqtSignal(str)  # the key was tried and rejected
 
     def __init__(self):
         super().__init__()
@@ -71,7 +72,7 @@ class ApiConnectorPage(QWidget):
         self.connected_provider = None
         self._worker = None
 
-        title = QLabel("API Connector")
+        title = QLabel("API settings")
         title.setObjectName("title")
         subtitle = QLabel("Connect VulnHunter to an AI model with your own API key.")
         subtitle.setStyleSheet(f"color: {MUTED};")
@@ -219,6 +220,7 @@ class ApiConnectorPage(QWidget):
             self.connected.emit(self._current, PROVIDERS[self._current]["label"])
         else:
             self._say(f"Could not connect: {message}", RED)
+            self.connect_failed.emit(message)
 
     def disconnect_clicked(self):
         self.settings[self._current]["api_key"] = ""

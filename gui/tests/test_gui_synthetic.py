@@ -249,12 +249,12 @@ def test_home_navigation(qapp):
     assert not window.back_button.isEnabled()
     assert not window.forward_button.isEnabled()
 
-    window.home_page.connector_requested.emit()
-    assert window.stack.currentIndex() == window.CONNECT
+    window.home_page.new_scan_requested.emit()
+    assert window.stack.currentIndex() == window.SCAN
     window.go_back()
     assert window.stack.currentIndex() == window.HOME
 
-    window.home_page.dashboard_requested.emit()
+    window.home_page.history_requested.emit()
     assert window.stack.currentIndex() == window.HISTORY
     window.show_stats()
     assert window.stack.currentIndex() == window.STATS
@@ -467,8 +467,8 @@ def test_demo_scan_shows_no_usage_figures(qapp):
 # Home page text size
 
 def test_home_page_text_is_larger_than_the_base_font():
-    assert "#homeHeading { font-size: 38px" in gui.HOME_QSS
-    assert "#cardTitle { font-size: 22px" in gui.HOME_QSS
+    assert "#homeHeading { font-size: 44px" in gui.HOME_QSS
+    assert "#cardTitle { font-size: 24px" in gui.HOME_QSS
 
 
 def test_home_page_widgets_use_the_sized_object_names(qapp):
@@ -476,7 +476,7 @@ def test_home_page_widgets_use_the_sized_object_names(qapp):
     assert home.objectName() == "homePage"
     assert home.findChild(gui.QLabel, "homeHeading") is not None
     assert home.findChild(gui.QLabel, "homeSub") is not None
-    assert home.findChild(gui.QLabel, "statusPill") is not None
+    assert home.findChild(gui.QPushButton, "homeNewScan") is not None
 
 
 # Per-finding actions: Fix, Accept, Ignore, View in code (all mocked)
@@ -635,3 +635,337 @@ def test_split_location_and_code_url():
     finding = Finding("X", "Low", "t", "src/a.py:12", "Open")
     assert code_url(finding).endswith("/blob/main/src/a.py#L12")
     assert code_url(replace(finding, location="src/a.py")).endswith("/blob/main/src/a.py")
+
+
+# UI cleanup: header, status pill, gear popup, reminder
+
+def test_header_has_sample_tag_status_pill_and_gear(qapp):
+    window = MainWindow()
+    assert window.sample_tag.text() == "Sample data"
+    assert window.status_pill.state() == "off"
+    assert window.gear_button.toolTip() == "API settings"
+    assert window.stack.count() == 4  # the API connector is a popup, not a page
+
+
+def test_status_pill_pulses_only_while_not_connected(qapp):
+    pill = gui.StatusPill()
+    assert (pill.state(), pill.label_text()) == ("off", "API not connected")
+    assert pill.is_pulsing()
+    pill.set_state("ok")
+    assert (pill.label_text(), pill.is_pulsing()) == ("Connected", False)
+    pill.set_state("error")
+    assert (pill.label_text(), pill.is_pulsing()) == ("Key rejected", False)
+    pill.set_state("off")
+    assert pill.is_pulsing()
+
+
+def test_pill_follows_the_connector(qapp):
+    window = MainWindow()
+    window.connector_page.connected.emit("deepseek", "DeepSeek")
+    assert window.status_pill.label_text() == "Connected"
+    assert "DeepSeek" in window.status_pill.toolTip()
+
+    window.connector_page.disconnected.emit()
+    assert window.status_pill.state() == "off"
+
+    window.connector_page.connect_failed.emit("401 unauthorized")
+    assert window.status_pill.label_text() == "Key rejected"
+
+    # Clearing the key after a rejection goes back to "not connected".
+    window.connector_page.api_key.setText("sk-example")
+    assert window.status_pill.state() == "error"
+    window.connector_page.api_key.setText("")
+    assert window.status_pill.state() == "off"
+
+
+def test_failed_connect_emits_connect_failed(qapp):
+    from gui.api_conn_page import ApiConnectorPage
+    page = ApiConnectorPage()
+    failures = []
+    page.connect_failed.connect(failures.append)
+    page._on_connect_done(False, "bad key")
+    assert failures == ["bad key"]
+    page._on_connect_done(True, "Model: x")
+    assert failures == ["bad key"]
+
+
+def test_gear_opens_the_api_settings_popup(qapp):
+    window = MainWindow()
+    window.gear_button.click()
+    assert window.settings_dialog.isVisible()
+    assert window.settings_dialog.isAncestorOf(window.connector_page)
+    window.settings_dialog.close()
+
+
+def test_getting_started_reminder_respects_dont_show_again(qapp, tmp_path):
+    from PyQt5.QtCore import QSettings
+    settings = QSettings(str(tmp_path / "vulngui.ini"), QSettings.IniFormat)
+    window = MainWindow(settings=settings)
+    assert not gui.reminder_hidden(settings)
+
+    dialog = window.maybe_show_reminder()
+    assert dialog is not None and len(dialog.STEPS) == 3
+    dialog.close_btn.click()  # closed without ticking the box: it will show again
+    assert not gui.reminder_hidden(settings)
+
+    dialog = window.maybe_show_reminder()
+    dialog.dont_show.setChecked(True)
+    dialog.close_btn.click()
+    assert gui.reminder_hidden(settings)
+    assert window.maybe_show_reminder() is None
+
+
+def test_reminder_is_not_shown_just_by_creating_the_window(qapp, tmp_path):
+    from PyQt5.QtCore import QSettings
+    window = MainWindow(settings=QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
+    assert window.reminder is None
+
+
+# Home page
+
+def test_home_page_greeting_and_new_scan_above_the_cards(qapp):
+    home = gui.HomePage()
+    heading = home.findChild(gui.QLabel, "homeHeading")
+    assert heading.text() == "Welcome back, dev"
+    cards = home.findChildren(gui.ModuleCard)
+    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Scan History", "Stats"]
+
+    home.resize(1200, 800)
+    home.show()
+    qapp.processEvents()
+    assert home.new_scan_btn.geometry().bottom() < min(c.geometry().top() for c in cards)
+    home.close()
+
+
+def test_home_page_has_no_getting_started_panel_or_api_card(qapp):
+    home = gui.HomePage()
+    texts = {label.text() for label in home.findChildren(gui.QLabel)}
+    assert "GETTING STARTED" not in texts and "API Connector" not in texts
+    assert "Dashboard" not in texts
+
+
+def test_home_buttons_emit_their_signals(qapp):
+    home = gui.HomePage()
+    got = []
+    home.new_scan_requested.connect(lambda: got.append("new"))
+    home.history_requested.connect(lambda: got.append("history"))
+    home.stats_requested.connect(lambda: got.append("stats"))
+    home.new_scan_btn.click()
+    cards = home.findChildren(gui.ModuleCard)
+    cards[0].click()
+    cards[1].click()
+    assert got == ["new", "history", "stats"]
+
+
+# Scan History
+
+def test_history_page_is_titled_scan_history(qapp):
+    page = HistoryPage()
+    assert "Scan History" in {label.text() for label in page.findChildren(gui.QLabel)}
+
+
+def test_history_filters_narrow_the_list_and_the_cards(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    assert page.table.rowCount() == len(SEED_HISTORY)
+
+    page.repo_filter.setCurrentText("sample-org/sample-backend")
+    assert page.table.rowCount() == 2
+    assert page.card_values["Scans"].text() == "2"
+
+    page.model_filter.setCurrentText("DeepSeek")
+    assert page.table.rowCount() == 1
+    assert table_column(page, 1) == ["DeepSeek"]
+
+    page.model_filter.setCurrentIndex(0)
+    page.repo_filter.setCurrentIndex(0)
+    page.search.setText("payments")
+    assert table_column(page, 0) == ["sample-org/payments-api"]
+    page.search.setText("")
+    assert page.table.rowCount() == len(SEED_HISTORY)
+
+
+def test_filtered_and_sorted_rows_still_open_the_right_scan(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    selected = []
+    page.record_selected.connect(selected.append)
+    page.repo_filter.setCurrentText("sample-org/payments-api")
+    page.table.cellClicked.emit(0, 0)
+    assert SEED_HISTORY[selected[0]].repo == "sample-org/payments-api"
+
+
+def test_history_filters_keep_their_choice_when_a_scan_is_added(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    page.model_filter.setCurrentText("DeepSeek")
+    page.refresh(list(SEED_HISTORY) + [replace(SEED_HISTORY[0], model="DeepSeek")])
+    assert page.model_filter.currentText() == "DeepSeek"
+    assert page.table.rowCount() == 2
+
+
+# Stats: aggregate burndown with a repo filter
+
+def test_stats_page_shows_the_aggregate_then_one_repo(qapp):
+    from gui.data.mock_data import BURNDOWN_BY_REPO, burndown_series, burndown_totals
+    stats = gui.StatsPage()
+    assert stats.repo_box.itemText(0) == "All repos"
+    open_now, closed, total = burndown_totals(burndown_series())
+    assert [stats.card_values[k].text() for k in ("Open", "Closed", "Total")] == [
+        str(open_now), str(closed), str(total)]
+    assert [v for _, v in stats.chart.points] == [
+        sum(week) for week in zip(*BURNDOWN_BY_REPO.values())]
+
+    stats.repo_box.setCurrentText("sample-org/payments-api")
+    assert [v for _, v in stats.chart.points] == BURNDOWN_BY_REPO["sample-org/payments-api"]
+    assert stats.card_values["Total"].text() == "1"
+    stats.chart.resize(900, 400)
+    assert not stats.chart.grab().isNull()
+
+
+def test_all_repos_burndown_is_the_sum_of_the_repos():
+    from gui.data.mock_data import BURNDOWN_BY_REPO, burndown_series
+    total = [v for _, v in burndown_series()]
+    for week, value in enumerate(total):
+        assert value == sum(series[week] for series in BURNDOWN_BY_REPO.values())
+    assert burndown_series("not a sample repo") == burndown_series("sample-org/sample-backend")
+
+
+def test_burndown_chart_handles_edge_data(qapp):
+    for compact in (False, True):
+        for points in ([], [("Week 1", 0)], [("Week 1", 3)], [("A", 40), ("B", 0)]):
+            chart = gui.BurndownChart(points, compact=compact)
+            chart.resize(600, 300)
+            assert not chart.grab().isNull()
+
+
+# Scan view: per-repo chart and collapsible log
+
+def test_scan_page_shows_a_repo_burndown_after_a_scan(qapp):
+    from gui.data.mock_data import burndown_series
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    assert page.repo_chart.points == []
+    run_demo_scan(page)
+    assert page.repo_chart.points == burndown_series("sample-org/sample-backend")
+    page.reset()
+    assert page.repo_chart.points == []
+
+
+def test_opening_a_past_scan_shows_that_repos_burndown(qapp):
+    from gui.data.mock_data import burndown_series
+    window = MainWindow()
+    row = next(i for i, r in enumerate(window.history) if r.repo == "sample-org/payments-api")
+    window.open_record(row)
+    assert window.scan_page.repo_chart.points == burndown_series("sample-org/payments-api")
+
+
+def test_scan_log_can_be_collapsed(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    assert not page.output.isHidden()
+    page.log_toggle.click()
+    assert page.output.isHidden() and "▸" in page.log_toggle.text()
+    page.log_toggle.click()
+    assert not page.output.isHidden() and "▾" in page.log_toggle.text()
+
+
+# Scanning popup, loading phrases and result card
+
+def test_scan_opens_a_popup_that_follows_the_phases(qapp):
+    from gui.data.mock_data import SCAN_PHRASES
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    page.start_scan()
+    page.timer.stop()
+    popup = page.progress
+    assert popup is not None and popup.isVisible()
+    assert popup.phase_label.text() == "Phase 1 of 4: Recon"
+    assert popup.phrase_label.text() == SCAN_PHRASES[0][0] == "Detecting..."
+
+    seen = []
+    for _ in range(len(page._run_output)):
+        page._next_line()
+        if page.progress is not None:
+            seen.append(page.progress.phase_label.text())
+    assert "Phase 2 of 4: Hunt" in seen
+    assert "Phase 3 of 4: Verification" in seen
+    assert seen[-1] == "Phase 4 of 4: Report"
+    assert popup.phrase_label.text() in SCAN_PHRASES[3]
+
+    page._next_line()  # the run is over
+    assert page.progress is None and not page.phrase_timer.isActive()
+
+
+def test_cancelling_the_popup_stops_the_replay(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    page.start_scan()
+    popup = page.progress
+    popup.cancel_btn.click()
+    assert page.progress is None
+    assert not page.timer.isActive() and not page.phrase_timer.isActive()
+    assert page.table.rowCount() == 0
+    assert page.output.toPlainText() == "Scan cancelled."
+    assert page.scan_btn.isEnabled()
+    assert page.result_dialog is None
+
+
+def test_finishing_a_scan_shows_a_red_result_card(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    run_demo_scan(page)
+    card = page.result_dialog
+    assert card is not None and card.level == "high"
+    assert "7 vulnerabilities detected" in card.banner_label.text()
+    assert [c.text() for c in card.chips] == ["3 High", "4 Low"]
+    assert not card.view_btn.isHidden()
+    card.view_btn.click()
+    assert card.result() == QDialog.Accepted
+
+
+def test_result_card_levels_and_wording(qapp):
+    def card(findings):
+        return gui.ScanResultDialog(None, findings)
+
+    none = card([])
+    assert none.level == "none" and "No vulnerabilities found" in none.banner_label.text()
+    assert none.view_btn.isHidden() and none.chips == []
+
+    low_only = card([Finding("A", "Low", "t", "a.py:1", "Open"), Finding("B", "Medium", "t", "a.py:2", "Open")])
+    assert low_only.level == "other"
+    assert "2 vulnerabilities detected" in low_only.banner_label.text()
+
+    one = card([Finding("A", "High+", "t", "a.py:1", "Open")])
+    assert one.level == "high" and "1 vulnerability detected" in one.banner_label.text()
+
+
+def test_phase_of_line_follows_the_sample_log_and_never_goes_back(qapp):
+    from gui.data.mock_data import phase_of_line
+    phase, phases = 0, []
+    for line in SAMPLE_OUTPUT:
+        phase = phase_of_line(line, phase)
+        phases.append(phase)
+    assert phases == sorted(phases)
+    assert set(phases) == {0, 1, 2, 3}
+    assert phase_of_line("[phase 1] late line", 3) == 3
+    assert phase_of_line("", 2) == 2
+
+
+def test_phrase_rotator_uses_only_approved_phrases_and_cycles(qapp):
+    import random
+    from gui.data.mock_data import HUNT_PHASE, SCAN_PHRASES
+    rotator = gui.PhraseRotator(random.Random(0))
+    assert rotator.next(0) == "Detecting..."
+    hunt = [rotator.next(HUNT_PHASE) for _ in SCAN_PHRASES[HUNT_PHASE]]
+    assert sorted(hunt) == sorted(SCAN_PHRASES[HUNT_PHASE])  # each phrase once per cycle
+    assert rotator.next(HUNT_PHASE) in SCAN_PHRASES[HUNT_PHASE]  # then it refills
+    assert [rotator.next(3), rotator.next(3)] == SCAN_PHRASES[3]
+    assert all(p.endswith("...") for phrases in SCAN_PHRASES for p in phrases)
+
+
+def test_progress_popup_rotates_its_phrase_on_the_timer(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    page.start_scan()
+    page.timer.stop()
+    before = page.progress.phrase_label.text()
+    page._rotate_phrase()
+    after = page.progress.phrase_label.text()
+    assert after != before
+    page.reset()
+    assert page.progress is None

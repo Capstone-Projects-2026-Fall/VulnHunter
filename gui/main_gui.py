@@ -1,3 +1,4 @@
+import random
 import re
 import sys
 from dataclasses import replace
@@ -9,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PyQt5.QtCore import QEvent, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import QEvent, QPointF, QRectF, QSettings, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -19,9 +20,10 @@ from PyQt5.QtWidgets import (
 )
 
 from gui.data.mock_data import (
-    ACCEPT_REASONS, DISABLED_MODELS, IGNORE_REASONS, MODEL_IDS, REPO_URL, SAMPLE_FINDINGS,
-    SAMPLE_OUTPUT, SEED_HISTORY, SEVERITY_ORDER, ScanRecord, code_url, sample_fix,
-    sample_snippet, split_location,
+    ACCEPT_REASONS, ALL_REPOS, BURNDOWN_BY_REPO, DISABLED_MODELS, HUNT_PHASE, IGNORE_REASONS,
+    MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_PHASES, SCAN_PHRASES, SEED_HISTORY,
+    SEVERITY_ORDER, ScanRecord, burndown_series, burndown_totals, code_url, phase_of_line,
+    result_level, sample_fix, sample_snippet, severity_summary, split_location,
 )
 from llm_connector.conn_all_llm import LLMConnector
 from gui.api_conn_page import ApiConnectorPage
@@ -36,7 +38,7 @@ QFrame#card QLabel { background: transparent; }
 QLabel#severityHeading { font-size: 12px; font-weight: 600; }
 QLabel#severityHeadline { font-size: 18px; font-weight: 600; }
 QLabel#severityDetail { font-size: 11px; }
-QLabel#homeTitle, QLabel#statsTitle { font-size: 32px; font-weight: 600; }
+QLabel#statsTitle { font-size: 32px; font-weight: 600; }
 QLabel#cardValue { font-size: 18px; font-weight: 600; }
 QPushButton#home {
     background: transparent; border: 0; color: #E6EEF8; font-size: 20px;
@@ -53,10 +55,25 @@ QPushButton#backNavigation:disabled, QPushButton#forwardNavigation:disabled {
     color: #52647B; background: transparent;
 }
 QLabel#title { font-size: 24px; font-weight: 600; }
-QWidget#homePage QLabel#homeTitle { font-size: 60px; font-weight: 600; }
-QWidget#homePage QLabel#homeSubtitle { font-size: 28px; color: #9FB3CC; }
-QWidget#homePage QPushButton { font-size: 26px; padding: 16px 44px; }
 QLabel#muted { color: #7F93AD; }
+QLabel#statusPill {
+    font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 13px;
+    border: 1px solid #243B5C; background: #0D2646; color: #9FB3CC;
+}
+QLabel#statusPill[state="off"] { color: #F5C451; border-color: #6B5A1F; background: #2A2410; }
+QLabel#statusPill[state="ok"] { color: #4ADE80; border-color: #1F5A38; background: #0F2A1C; }
+QLabel#statusPill[state="error"] { color: #F87171; border-color: #6B2A2A; background: #2A1010; }
+QLabel#sampleTag {
+    font-size: 13px; color: #9FB3CC; border: 1px solid #243B5C; border-radius: 11px;
+    padding: 2px 10px; background: transparent;
+}
+QPushButton#gear {
+    background: transparent; border: 0; color: #9FB3CC; font-size: 26px; padding: 0;
+    min-width: 36px; max-width: 36px;
+}
+QPushButton#gear:hover { color: #38BDF8; }
+QLabel#popupTitle { font-size: 22px; font-weight: 600; }
+QLabel#phrase { font-size: 20px; }
 QPushButton#link {
     background: transparent; border: 0; padding: 0; color: #38BDF8; text-decoration: underline;
 }
@@ -176,19 +193,14 @@ HOME_QSS = """
 }
 #homePage QLabel { background: transparent; }
 
-#homeEyebrow { font-size: 12px; font-weight: 700; letter-spacing: 3px; color: #38bdf8; }
-#homeHeading { font-size: 38px; font-weight: 700; color: #f1f6fd; }
-#homeSub     { font-size: 15px; color: #9fb4d0; }
-#homeFooter  { font-size: 12px; color: #4d6585; }
-
-/* status pill */
-#statusPill {
-    font-size: 12px; font-weight: 700;
-    padding: 7px 14px; border-radius: 14px;
-    background: #0d2646; border: 1px solid #16365f; color: #9fb4d0;
+#homeHeading { font-size: 44px; font-weight: 700; color: #f1f6fd; }
+#homeSub     { font-size: 18px; color: #9fb4d0; }
+#homeNewScan {
+    background: #38bdf8; color: #05101f; border: 0; border-radius: 10px;
+    font-size: 20px; font-weight: 700; padding: 14px 48px;
 }
-#statusPill[state="ok"]  { color: #4ade80; border-color: #1f5f3f; background: rgba(74,222,128,0.08); }
-#statusPill[state="off"] { color: #fbbf24; border-color: #5f4a1f; background: rgba(251,191,36,0.08); }
+#homeNewScan:hover   { background: #7dd3fc; }
+#homeNewScan:pressed { background: #0ea5e9; }
 
 /* module cards */
 #moduleCard {
@@ -202,18 +214,10 @@ HOME_QSS = """
     font-size: 24px; color: #38bdf8;
     background: rgba(56,189,248,0.12); border-radius: 12px;
 }
-#cardTitle { font-size: 22px; font-weight: 700; color: #f1f6fd; }
-#cardDesc  { font-size: 14px; color: #9fb4d0; }
-#cardGo    { font-size: 14px; font-weight: 700; color: #38bdf8; }
+#cardTitle { font-size: 24px; font-weight: 700; color: #f1f6fd; }
+#cardDesc  { font-size: 16px; color: #9fb4d0; }
+#cardGo    { font-size: 16px; font-weight: 700; color: #38bdf8; }
 
-/* getting started panel */
-#panel { background: #0d2646; border: 1px solid #16365f; border-radius: 12px; }
-#panelTitle { font-size: 12px; font-weight: 700; letter-spacing: 2px; color: #7b93b3; }
-#homePage QLabel#stepBadge {
-    font-size: 12px; font-weight: 700; color: #0a1424;
-    background: #38bdf8; border-radius: 12px;
-}
-#stepText { font-size: 14px; color: #dbe6f5; }
 """
 
 
@@ -255,9 +259,9 @@ class ModuleCard(QPushButton):
         lay.addWidget(go)
 
 class HomePage(QWidget):
-    dashboard_requested = pyqtSignal()
+    history_requested = pyqtSignal()
     stats_requested = pyqtSignal()
-    connector_requested = pyqtSignal()
+    new_scan_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -265,108 +269,167 @@ class HomePage(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(HOME_QSS)
 
-        # ---------- header ----------
-        eyebrow = QLabel("OVERVIEW")
-        eyebrow.setObjectName("homeEyebrow")
-        heading = QLabel("Welcome back")
+        heading = QLabel("Welcome back, dev")
         heading.setObjectName("homeHeading")
-        sub = QLabel("Review findings, track stats, or connect a data source.")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub = QLabel("Review findings, track stats, or start a scan.")
         sub.setObjectName("homeSub")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        titles = QVBoxLayout()
-        titles.setSpacing(0)
-        titles.addWidget(eyebrow)
-        titles.addSpacing(8)
-        titles.addWidget(heading)
-        titles.addSpacing(6)
-        titles.addWidget(sub)
+        self.new_scan_btn = QPushButton("New Scan")
+        self.new_scan_btn.setObjectName("homeNewScan")
+        self.new_scan_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_scan_btn.setToolTip("Start a new scan of a repository.")
+        self.new_scan_btn.clicked.connect(self.new_scan_requested.emit)
 
-        self.pill = QLabel()
-        self.pill.setObjectName("statusPill")
-        self.set_api_status(False)
-
-        header = QHBoxLayout()
-        header.addLayout(titles)
-        header.addStretch()
-        header.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignTop)
-
-        # ---------- module cards ----------
         cards = QHBoxLayout()
         cards.setSpacing(20)
+        cards.addStretch(1)
         for icon, title, desc, signal in [
-            ("▦", "Dashboard", "Review findings and scan activity in one place.", self.dashboard_requested),
-            ("◔", "Stats", "Totals and charts across all of your results.", self.stats_requested),
-            ("⇄", "API Connector", "Configure and test your data source connections.", self.connector_requested),
+            ("▦", "Scan History", "Past scans and their findings.", self.history_requested),
+            ("◔", "Stats", "Burndown across all repos.", self.stats_requested),
         ]:
             card = ModuleCard(icon, title, desc)
             card.clicked.connect(signal.emit)
-            cards.addWidget(card, 1)
+            cards.addWidget(card, 3)
+        cards.addStretch(1)
 
-        # ---------- getting started (full width, steps in a row) ----------
-        panel = QFrame()
-        panel.setObjectName("panel")
-        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        panel_lay = QVBoxLayout(panel)
-        panel_lay.setContentsMargins(24, 18, 24, 20)
-        panel_lay.setSpacing(14)
-
-        panel_title = QLabel("GETTING STARTED")
-        panel_title.setObjectName("panelTitle")
-        panel_lay.addWidget(panel_title)
-
-        steps = QHBoxLayout()
-        steps.setSpacing(32)
-        for n, text in enumerate(
-            ["Connect your API", "Go to dashboard", "Utilize Vulnhunter"], 1
-        ):
-            steps.addLayout(self._step_row(str(n), text), 1)
-        panel_lay.addLayout(steps)
-
-    
-
-        # ---------- assemble ----------
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(48, 36, 48, 20)
+        layout.setContentsMargins(48, 36, 48, 36)
         layout.setSpacing(0)
-        layout.addLayout(header)
-        layout.addSpacing(32)
-        layout.addLayout(cards, 1)
-        layout.addSpacing(24)
-        layout.addWidget(panel)
-        layout.addSpacing(14)
+        layout.addStretch(1)
+        layout.addWidget(heading)
+        layout.addSpacing(8)
+        layout.addWidget(sub)
+        layout.addSpacing(26)
+        layout.addWidget(self.new_scan_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(30)
+        layout.addLayout(cards)
+        layout.addStretch(2)
 
-    # ---------- helpers ----------
-    def _step_row(self, num: str, text: str) -> QHBoxLayout:
-        badge = QLabel(num)
-        badge.setObjectName("stepBadge")
-        badge.setFixedSize(24, 24)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl = QLabel(text)
-        lbl.setObjectName("stepText")
-        row = QHBoxLayout()
-        row.setSpacing(12)
-        row.addWidget(badge)
-        row.addWidget(lbl, 1)
-        return row
 
-    # ---------- public API ----------
-    def set_api_status(self, connected: bool) -> None:
-        self.pill.setText("●  API connected" if connected else "●  API not connected")
-        self.pill.setProperty("state", "ok" if connected else "off")
-        self.pill.style().unpolish(self.pill)
-        self.pill.style().polish(self.pill)
+class BurndownChart(QWidget):
+    """Open findings over time, drawn with QPainter (no chart library needed)."""
+    LINE, IDEAL, GRID, TEXT = "#38BDF8", "#7F93AD", "#243B5C", "#E6EEF8"
+
+    def __init__(self, points=(), compact=False):
+        super().__init__()
+        self.compact = compact
+        self.points = list(points)  # [(label, open_count), ...]
+        self.setMinimumHeight(110 if compact else 300)
+
+    def set_points(self, points):
+        self.points = list(points)
+        self.update()
+
+    def paintEvent(self, _event):
+        if not self.points:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setFont(QFont("Segoe UI", 7 if self.compact else 10))
+        left, right, top, bottom = (24, 8, 12, 20) if self.compact else (56, 28, 72, 48)
+        plot = QRectF(left, top, max(self.width() - left - right, 1),
+                      max(self.height() - top - bottom, 1))
+        highest = max(max(v for _, v in self.points), 1)
+        step = max(1, -(-highest // (3 if self.compact else 6)))
+        peak = step * -(-highest // step)  # axis top: next multiple of the step, so it gets a gridline
+
+        def point(i, value):
+            n = len(self.points)
+            x = plot.left() + (plot.width() * i / (n - 1) if n > 1 else plot.width() / 2)
+            return QPointF(x, plot.bottom() - plot.height() * value / peak)
+
+        for tick in range(0, peak + 1, step):
+            y = plot.bottom() - plot.height() * tick / peak
+            p.setPen(QPen(QColor(self.GRID), 1))
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            p.setPen(QColor(self.TEXT))
+            p.drawText(QRectF(0, y - 10, left - 6, 20), Qt.AlignRight | Qt.AlignVCenter, str(tick))
+
+        last = len(self.points) - 1
+        p.setPen(QPen(QColor(self.IDEAL), 1.5, Qt.DashLine))
+        p.drawLine(point(0, self.points[0][1]), point(last, 0))
+        p.setPen(QPen(QColor(self.LINE), 2 if self.compact else 3))
+        for i in range(last):
+            p.drawLine(point(i, self.points[i][1]), point(i + 1, self.points[i + 1][1]))
+        p.setBrush(QColor(self.LINE))
+        radius = 3 if self.compact else 5
+        for i, (label, value) in enumerate(self.points):
+            pos = point(i, value)
+            p.setPen(QPen(QColor(self.LINE), 1))
+            p.drawEllipse(pos, radius, radius)
+            p.setPen(QColor(self.TEXT))
+            axis_label = label.replace("Week ", "W") if self.compact else label
+            p.drawText(QRectF(pos.x() - 30, plot.bottom() + 4, 60, 18), Qt.AlignCenter, axis_label)
+            if not self.compact:
+                p.drawText(QRectF(pos.x() - 20, pos.y() - 30, 40, 20), Qt.AlignCenter, str(value))
+
+        if not self.compact:
+            p.setPen(QPen(QColor(self.LINE), 3))
+            p.drawLine(QPointF(left, 16), QPointF(left + 28, 16))
+            p.setPen(QColor(self.TEXT))
+            p.drawText(QRectF(left + 36, 4, 160, 24), Qt.AlignLeft | Qt.AlignVCenter, "Open findings")
+            p.setPen(QPen(QColor(self.IDEAL), 2, Qt.DashLine))
+            p.drawLine(QPointF(left + 200, 16), QPointF(left + 228, 16))
+            p.setPen(QColor(self.TEXT))
+            p.drawText(QRectF(left + 236, 4, 200, 24), Qt.AlignLeft | Qt.AlignVCenter, "Ideal burndown")
+
 
 class StatsPage(QWidget):
+    """Burndown across all sample repos, with a repo filter. Sample data only."""
+
     def __init__(self):
         super().__init__()
         title = QLabel("Vulnerabilities Burndown")
         title.setObjectName("statsTitle")
-        title.setAlignment(Qt.AlignCenter)
+        self.repo_box = QComboBox()
+        self.repo_box.addItem(ALL_REPOS)
+        self.repo_box.addItems(list(BURNDOWN_BY_REPO))
+        self.repo_box.setToolTip("Show the burndown for all repos or for one.")
+        self.repo_box.currentIndexChanged.connect(self._update)
+
+        top = QHBoxLayout()
+        top.addWidget(title)
+        top.addStretch()
+        top.addWidget(self.repo_box)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self.card_values = {}
+        for name in ("Open", "Closed", "Total"):
+            card = QFrame()
+            card.setObjectName("card")
+            box = QVBoxLayout(card)
+            value = QLabel("0")
+            value.setObjectName("cardValue")
+            box.addWidget(value)
+            box.addWidget(QLabel(name))
+            self.card_values[name] = value
+            cards.addWidget(card)
+
+        self.chart = BurndownChart()
+        note = QLabel("Solid: open findings. Dashed: ideal burndown. "
+                      "Sample data, not real scan results.")
+        note.setObjectName("muted")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
-        layout.addWidget(title)
-        layout.addStretch()
+        layout.setSpacing(16)
+        layout.addLayout(top)
+        layout.addLayout(cards)
+        layout.addWidget(self.chart, 1)
+        layout.addWidget(note)
+        self._update()
+
+    def _update(self, *_args):
+        series = burndown_series(self.repo_box.currentText())
+        self.chart.set_points(series)
+        for name, value in zip(("Open", "Closed", "Total"), burndown_totals(series)):
+            self.card_values[name].setText(str(value))
+
+
+ALL_MODELS = "All models"
 
 
 class HistoryPage(QWidget):
@@ -375,7 +438,7 @@ class HistoryPage(QWidget):
 
     def __init__(self):
         super().__init__()
-        title = QLabel("Scans")
+        title = QLabel("Scan History")
         title.setObjectName("title")
         new_btn = QPushButton("New Scan")
         new_btn.setObjectName("primary")
@@ -399,6 +462,23 @@ class HistoryPage(QWidget):
             box.addWidget(QLabel(name))
             self.card_values[name] = value
             cards.addWidget(card)
+
+        self.repo_filter = QComboBox()
+        self.repo_filter.addItem(ALL_REPOS)
+        self.repo_filter.setToolTip("Show scans for one repository.")
+        self.model_filter = QComboBox()
+        self.model_filter.addItem(ALL_MODELS)
+        self.model_filter.setToolTip("Show scans run with one model.")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search scans")
+        self.repo_filter.currentIndexChanged.connect(self._render)
+        self.model_filter.currentIndexChanged.connect(self._render)
+        self.search.textChanged.connect(self._render)
+        filters = QHBoxLayout()
+        filters.setSpacing(10)
+        filters.addWidget(self.repo_filter)
+        filters.addWidget(self.model_filter)
+        filters.addWidget(self.search, 1)
 
         self.table = make_table(
             ["Repository", "Model", "Mode", "Date", "Findings", "Tokens", "Duration"])
@@ -425,17 +505,52 @@ class HistoryPage(QWidget):
         layout.setSpacing(16)
         layout.addLayout(top)
         layout.addLayout(cards)
+        layout.addLayout(filters)
         layout.addWidget(self.table, 1)
 
     def refresh(self, records):
         self._records = list(records)
-        findings = [f for rec in self._records for f in rec.findings]
-        counts = (len(self._records), len(findings),
+        self._sync_filters()
+        self._render()
+
+    def _sync_filters(self):
+        """Refill the repo and model filters from the records, keeping the current choice."""
+        for box, first, values in (
+                (self.repo_filter, ALL_REPOS, [r.repo for r in self._records]),
+                (self.model_filter, ALL_MODELS, [r.model for r in self._records])):
+            current = box.currentText()
+            box.blockSignals(True)
+            box.clear()
+            box.addItem(first)
+            box.addItems(list(dict.fromkeys(values)))
+            index = box.findText(current)
+            box.setCurrentIndex(index if index >= 0 else 0)
+            box.blockSignals(False)
+
+    def _visible_records(self):
+        """[(index in self._records, record), ...] that pass the filters."""
+        repo = self.repo_filter.currentText()
+        model = self.model_filter.currentText()
+        text = self.search.text().strip().casefold()
+        visible = []
+        for index, rec in enumerate(self._records):
+            if repo != ALL_REPOS and rec.repo != repo:
+                continue
+            if model != ALL_MODELS and rec.model != model:
+                continue
+            if text and text not in " ".join((rec.repo, rec.model, rec.mode, rec.date)).casefold():
+                continue
+            visible.append((index, rec))
+        return visible
+
+    def _render(self, *_args):
+        indexed_records = self._visible_records()
+        findings = [f for _index, rec in indexed_records for f in rec.findings]
+        counts = (len(indexed_records), len(findings),
                   sum(f.status == "Verified" for f in findings))
         for label, count in zip(self.card_values.values(), counts):
             label.setText(str(count))
 
-        indexed_records = list(enumerate(self._records))
         if self._sort_column is not None:
             indexed_records.sort(
                 key=lambda entry: self._sort_key(entry[1], self._sort_column),
@@ -468,13 +583,13 @@ class HistoryPage(QWidget):
     def _clear_sort(self, _position=None):
         self._sort_column = None
         self.table.horizontalHeader().setSortIndicatorShown(False)
-        self.refresh(self._records)
+        self._render()
 
     def sort_by_column(self, column, order=Qt.AscendingOrder):
         self._sort_column = column
         self._sort_order = order
         self.table.horizontalHeader().setSortIndicatorShown(True)
-        self.refresh(self._records)
+        self._render()
 
     def _select_record(self, row, _column):
         item = self.table.item(row, 0)
@@ -589,6 +704,307 @@ class CodeViewDialog(QDialog):
         layout.addWidget(note)
 
 
+REMINDER_KEY = "gettingStarted/hidden"
+
+
+def reminder_hidden(settings):
+    """True once the user ticked 'Don't show this again' on the Getting started reminder."""
+    return settings.value(REMINDER_KEY, False, type=bool)
+
+
+def set_reminder_hidden(settings, hidden):
+    settings.setValue(REMINDER_KEY, bool(hidden))
+    settings.sync()
+
+
+class StatusPill(QLabel):
+    """API status in the header: pulsing yellow until connected, green once it is, red if rejected."""
+    STATES = {
+        # state: (label, dot colour, dimmed dot colour while pulsing)
+        "off": ("API not connected", "#F5C451", "#6B5A1F"),
+        "ok": ("Connected", "#4ADE80", None),
+        "error": ("Key rejected", "#F87171", None),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("statusPill")
+        self.setTextFormat(Qt.RichText)
+        self._bright = True
+        self._timer = QTimer(self)
+        self._timer.setInterval(700)
+        self._timer.timeout.connect(self._pulse)
+        self._state = "off"
+        self.set_state("off")
+
+    def state(self):
+        return self._state
+
+    def label_text(self):
+        return self.STATES[self._state][0]
+
+    def is_pulsing(self):
+        return self._timer.isActive()
+
+    def set_state(self, state):
+        self._state = state
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self._bright = True
+        self._render()
+        if self.STATES[state][2]:
+            self._timer.start()
+        else:
+            self._timer.stop()
+
+    def _pulse(self):
+        self._bright = not self._bright
+        self._render()
+
+    def _render(self):
+        label, bright, dim = self.STATES[self._state]
+        colour = bright if self._bright or not dim else dim
+        self.setText(f'<span style="color:{colour}">●</span>&nbsp;&nbsp;{label}')
+
+
+class BusyBar(QWidget):
+    """A thin bar with a chunk sliding along it, for work of unknown length."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(6)
+        self._pos = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(30)
+        self._timer.timeout.connect(self._tick)
+
+    def showEvent(self, event):
+        self._timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def _tick(self):
+        self._pos = (self._pos + 0.02) % 1.0
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        track = QPainterPath()
+        track.addRoundedRect(QRectF(self.rect()), 3, 3)
+        p.fillPath(track, QColor("#243B5C"))
+        p.setClipPath(track)
+        chunk = self.width() * 0.35
+        x = -chunk + self._pos * (self.width() + chunk)
+        p.setBrush(QColor("#38BDF8"))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(QRectF(x, 0, chunk, self.height()), 3, 3)
+
+
+class PhraseRotator:
+    """Hands out the next loading phrase for a scan phase, cycling through that phase's list.
+
+    The hunt phase is shuffled; the others keep their order so a scan starts with 'Detecting...'
+    and ends with 'Sorting by severity...'.
+    """
+
+    def __init__(self, rng=None):
+        self._rng = rng or random.Random()
+        self._queues = {}
+
+    def next(self, phase):
+        queue = self._queues.get(phase)
+        if not queue:
+            queue = list(SCAN_PHRASES[phase])
+            if phase == HUNT_PHASE:
+                self._rng.shuffle(queue)
+            self._queues[phase] = queue
+        return queue.pop(0)
+
+
+class GettingStartedDialog(QDialog):
+    """A closable reminder of the first steps, shown on launch until the user opts out."""
+    STEPS = ["Connect your API with the gear icon",
+             "Start a New Scan, or open Scan History",
+             "Review findings, then Fix, Accept or Ignore"]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Getting started")
+        self.setMinimumWidth(480)
+        title = QLabel("Getting started")
+        title.setObjectName("popupTitle")
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(title)
+        for number, text in enumerate(self.STEPS, 1):
+            badge = QLabel(str(number))
+            badge.setFixedSize(26, 26)
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setStyleSheet("background: #38BDF8; color: #05101F; border-radius: 13px; font-weight: 600;")
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            row.addWidget(badge)
+            row.addWidget(QLabel(text), 1)
+            layout.addLayout(row)
+
+        self.dont_show = QCheckBox("Don't show this again")
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+        footer = QHBoxLayout()
+        footer.addWidget(self.dont_show)
+        footer.addStretch()
+        footer.addWidget(self.close_btn)
+        layout.addSpacing(6)
+        layout.addLayout(footer)
+
+
+class ApiSettingsDialog(QDialog):
+    """The API connector, opened from the gear icon in the header."""
+
+    def __init__(self, parent, connector_page):
+        super().__init__(parent)
+        self.setWindowTitle("API settings")
+        self.setMinimumWidth(640)
+        self.connector_page = connector_page
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(close_btn)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.addWidget(connector_page)
+        layout.addLayout(footer)
+
+
+class ScanProgressDialog(QDialog):
+    """Popup shown while a scan runs: the phase, a rotating phrase, and a Cancel button."""
+    cancelled = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Scanning")
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumWidth(520)
+        self._quiet = False
+
+        title = QLabel("Scanning for vulnerabilities")
+        title.setObjectName("popupTitle")
+        self.phase_label = QLabel()
+        self.phase_label.setObjectName("muted")
+        self.bar = BusyBar()
+        self.phrase_label = QLabel()
+        self.phrase_label.setObjectName("phrase")
+        note = QLabel("Sample data replay")
+        note.setObjectName("muted")
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+
+        footer = QHBoxLayout()
+        footer.addWidget(note)
+        footer.addStretch()
+        footer.addWidget(self.cancel_btn)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(self.phase_label)
+        layout.addSpacing(4)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.phrase_label)
+        layout.addSpacing(8)
+        layout.addLayout(footer)
+
+    def set_phase(self, index):
+        self.phase_label.setText(f"Phase {index + 1} of {len(SCAN_PHASES)}: {SCAN_PHASES[index]}")
+
+    def set_phrase(self, text):
+        self.phrase_label.setText(text)
+
+    def finish(self):
+        """Close because the scan finished (not because the user cancelled)."""
+        self._quiet = True
+        self.accept()
+
+    def reject(self):
+        if not self._quiet:
+            self.cancelled.emit()
+        super().reject()
+
+
+class ScanResultDialog(QDialog):
+    """Result card shown when a scan finishes: red, amber or green, with a count per severity."""
+    BANNERS = {  # level: (background, border, text colour, icon)
+        "high": ("#2A1010", "#6B2A2A", "#F87171", "⚠"),
+        "other": ("#2A2410", "#6B5A1F", "#F5C451", "⚠"),
+        "none": ("#0F2A1C", "#1F5A38", "#4ADE80", "✓"),
+    }
+    CHIPS = {"High+": ("#2A1010", "#F87171"), "High": ("#2A1010", "#F87171"),
+             "Medium": ("#2A2410", "#F5C451")}
+    DEFAULT_CHIP = ("#172A47", "#9FB3CC")
+
+    def __init__(self, parent, findings):
+        super().__init__(parent)
+        self.setWindowTitle("Scan complete")
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumWidth(460)
+        self.level = result_level(findings)
+        background, border, colour, icon = self.BANNERS[self.level]
+        count = len(findings)
+        if count == 0:
+            text = "No vulnerabilities found"
+        else:
+            text = f"{count} {'vulnerability' if count == 1 else 'vulnerabilities'} detected"
+
+        banner = QFrame()
+        banner.setStyleSheet(f"background: {background}; border: 1px solid {border}; border-radius: 6px;")
+        self.banner_label = QLabel(f"{icon}  {text}")
+        self.banner_label.setStyleSheet(
+            f"color: {colour}; font-size: 22px; font-weight: 600; border: 0; background: transparent;")
+        banner_box = QVBoxLayout(banner)
+        banner_box.setContentsMargins(16, 12, 16, 12)
+        banner_box.addWidget(self.banner_label)
+
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        self.chips = []
+        for tier, n in severity_summary(findings):
+            chip_bg, chip_fg = self.CHIPS.get(tier, self.DEFAULT_CHIP)
+            chip = QLabel(f"{n} {tier}")
+            chip.setStyleSheet(
+                f"background: {chip_bg}; color: {chip_fg}; border-radius: 10px; padding: 2px 10px; font-size: 15px;")
+            chips.addWidget(chip)
+            self.chips.append(chip)
+        chips.addStretch()
+
+        note = QLabel("Sample results")
+        note.setObjectName("muted")
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.reject)
+        self.view_btn = QPushButton("View findings")
+        self.view_btn.setObjectName("primary")
+        self.view_btn.clicked.connect(self.accept)
+        self.view_btn.setVisible(count > 0)
+        footer = QHBoxLayout()
+        footer.addWidget(note)
+        footer.addStretch()
+        footer.addWidget(self.close_btn)
+        footer.addWidget(self.view_btn)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(banner)
+        if self.chips:
+            layout.addLayout(chips)
+        layout.addSpacing(6)
+        layout.addLayout(footer)
+
+
 class ScanPage(QWidget):
     finished = pyqtSignal(object)  # emits a ScanRecord
 
@@ -601,6 +1017,12 @@ class ScanPage(QWidget):
         self._rows = []  # findings in table order
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._next_line)
+        self.phrase_timer = QTimer(self)
+        self.phrase_timer.timeout.connect(self._rotate_phrase)
+        self.phrases = PhraseRotator()
+        self.progress = None  # the scanning popup while a scan runs
+        self.result_dialog = None
+        self._phase = 0
 
         # Top row: repository, model, demo, scan
         self.repo = QLineEdit()
@@ -635,10 +1057,28 @@ class ScanPage(QWidget):
         self.table.setColumnWidth(4, 125)
         self.table.itemSelectionChanged.connect(self._refresh_detail)
         self.tracker = SeverityTracker()
+        self.repo_chart = BurndownChart(compact=True)
+        chart_card = QFrame()
+        chart_card.setObjectName("card")
+        chart_card.setFixedWidth(200)
+        chart_box = QVBoxLayout(chart_card)
+        chart_box.setContentsMargins(8, 8, 8, 8)
+        chart_box.setSpacing(2)
+        chart_heading = QLabel("This repo")
+        chart_heading.setObjectName("severityHeading")
+        chart_note = QLabel("Open findings, sample data")
+        chart_note.setObjectName("severityDetail")
+        chart_box.addWidget(chart_heading)
+        chart_box.addWidget(self.repo_chart, 1)
+        chart_box.addWidget(chart_note)
+        side = QVBoxLayout()
+        side.setSpacing(12)
+        side.addWidget(self.tracker)
+        side.addWidget(chart_card, 1)
         body = QHBoxLayout()
         body.setSpacing(16)
         body.addWidget(self.table, 1)
-        body.addWidget(self.tracker)
+        body.addLayout(side)
 
         # Selected finding: details and actions. Fix, Accept, Ignore and View in code are
         # mocked: they work on sample data only and never touch a repository.
@@ -695,6 +1135,11 @@ class ScanPage(QWidget):
         # Output
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
+        self.log_toggle = QPushButton("▾ Scan log")
+        self.log_toggle.setObjectName("link")
+        self.log_toggle.setCursor(Qt.PointingHandCursor)
+        self.log_toggle.setToolTip("Show or hide the scan log.")
+        self.log_toggle.clicked.connect(self._toggle_log)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -702,6 +1147,7 @@ class ScanPage(QWidget):
         layout.addLayout(top)
         layout.addLayout(body, 2)
         layout.addWidget(self.detail)
+        layout.addWidget(self.log_toggle, 0, Qt.AlignLeft)
         layout.addWidget(self.output, 1)
 
         self._refresh_detail()
@@ -710,21 +1156,32 @@ class ScanPage(QWidget):
     def reset(self):
         """Blank page for a new scan."""
         self.timer.stop()
+        self._close_progress()
+        self._close_result()
         self._set_inputs_editable(True)
         self.repo.clear()
         self.demo.setChecked(True)
         self._fill_table([])
+        self.repo_chart.set_points([])
         self.output.clear()
         self._refresh_detail()
 
     def show_record(self, record):
         """Read-only view of a past scan."""
         self.timer.stop()
+        self._close_progress()
+        self._close_result()
         self.repo.setText(record.repo)
         self.demo.setChecked(record.mode == "Demo")
         self._fill_table(record.findings)
+        self.repo_chart.set_points(burndown_series(record.repo))
         self.output.setPlainText("\n".join(record.output))
         self._set_inputs_editable(False)
+
+    def _toggle_log(self):
+        show = self.output.isHidden()
+        self.output.setVisible(show)
+        self.log_toggle.setText("▾ Scan log" if show else "▸ Scan log")
 
     def _set_inputs_editable(self, editable):
         self.repo.setReadOnly(not editable)
@@ -758,12 +1215,63 @@ class ScanPage(QWidget):
             return
 
         # Otherwise, run your existing simulated demo replay workflow
+        self._close_result()
         self._fill_table([])
+        self.repo_chart.set_points([])
         self.output.clear()
         self.scan_btn.setEnabled(False)
         self._line_index = 0
         self._run_output = self._output_for_model()
-        self.timer.start(500)
+        self._phase = 0
+        self.phrases = PhraseRotator()
+        self._open_progress()
+        self.timer.start(self.REPLAY_INTERVAL_MS)
+        self.phrase_timer.start(self.PHRASE_INTERVAL_MS)
+
+    # Scanning popup and result card
+    REPLAY_INTERVAL_MS = 300
+    PHRASE_INTERVAL_MS = 2000
+
+    def _open_progress(self):
+        self._close_progress()
+        self.progress = ScanProgressDialog(self)
+        self.progress.cancelled.connect(self._cancel_scan)
+        self.progress.set_phase(self._phase)
+        self.progress.set_phrase(self.phrases.next(self._phase))
+        self.progress.show()
+
+    def _close_progress(self):
+        self.phrase_timer.stop()
+        if self.progress is not None:
+            dialog, self.progress = self.progress, None
+            dialog.finish()
+            dialog.deleteLater()
+
+    def _close_result(self):
+        if self.result_dialog is not None:
+            dialog, self.result_dialog = self.result_dialog, None
+            dialog.close()
+            dialog.deleteLater()
+
+    def _rotate_phrase(self):
+        if self.progress is not None:
+            self.progress.set_phrase(self.phrases.next(self._phase))
+
+    def _cancel_scan(self):
+        """The user cancelled the scanning popup (a demo replay just stops)."""
+        self.timer.stop()
+        self.phrase_timer.stop()
+        dialog, self.progress = self.progress, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self._fill_table([])
+        self.output.setPlainText("Scan cancelled.")
+        self.scan_btn.setEnabled(True)
+
+    def _show_result(self, findings):
+        self.result_dialog = ScanResultDialog(self, findings)
+        self.result_dialog.accepted.connect(self.table.setFocus)
+        self.result_dialog.show()
 
     def _output_for_model(self):
         model = self.model_box.currentText()
@@ -771,13 +1279,22 @@ class ScanPage(QWidget):
 
     def _next_line(self):
         if self._line_index < len(self._run_output):
-            self.output.appendPlainText(self._run_output[self._line_index])
+            line = self._run_output[self._line_index]
+            self.output.appendPlainText(line)
             self._line_index += 1
+            phase = phase_of_line(line, self._phase)
+            if phase != self._phase:
+                self._phase = phase
+                if self.progress is not None:
+                    self.progress.set_phase(phase)
+                    self.progress.set_phrase(self.phrases.next(phase))
             return
         self.timer.stop()
+        self._close_progress()
         # Copies, so a decision on one scan never changes the sample data or other scans.
         findings = [replace(f) for f in self.sample_findings]
         self._fill_table(findings)
+        self.repo_chart.set_points(burndown_series(self.repo.text().strip() or REPO_URL))
         self.scan_btn.setEnabled(True)
         now = datetime.now()
         record = ScanRecord(
@@ -791,6 +1308,7 @@ class ScanPage(QWidget):
             duration="n/a",
         )
         self.finished.emit(record)
+        self._show_result(findings)
 
     def _fill_table(self, findings):
         self.tracker.update_counts(findings)
@@ -880,14 +1398,15 @@ class ScanPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    HOME, HISTORY, SCAN, STATS, CONNECT = 0, 1, 2, 3, 4
+    HOME, HISTORY, SCAN, STATS = 0, 1, 2, 3
     MIN_ZOOM = 0.7
     MAX_ZOOM = 2.0
     DEFAULT_ZOOM = 1.0
     ZOOM_STEP = 0.1
 
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
+        self.app_settings = settings if settings is not None else QSettings("VulnHunter", "VulnGUI")
         self._zoom = self.DEFAULT_ZOOM
         self.setWindowTitle("VulnHunter")
         self.setMinimumSize(*MIN_WINDOW_SIZE)
@@ -903,20 +1422,24 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryPage()
         self.scan_page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
         self.stats_page = StatsPage()
-        self.connector_page = ApiConnectorPage()
-        self.connector_page.connected.connect(self.on_llm_connected)
-        self.connector_page.disconnected.connect(self.on_llm_disconnected)
-        self.connected_provider = None
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.scan_page)
         self.stack.addWidget(self.stats_page)
-        self.stack.addWidget(self.connector_page)
         self._page_history = [self.HOME]
         self._page_history_position = 0
         self.home_page.stats_requested.connect(self.show_stats)
-        self.home_page.connector_requested.connect(self.show_connector)
+
+        # API settings live in a popup opened from the gear icon, not on a page of their own.
+        self.connector_page = ApiConnectorPage()
+        self.connector_page.connected.connect(self.on_llm_connected)
+        self.connector_page.disconnected.connect(self.on_llm_disconnected)
+        self.connector_page.connect_failed.connect(self.on_llm_connect_failed)
+        self.connector_page.api_key.textChanged.connect(self._on_api_key_edited)
+        self.settings_dialog = ApiSettingsDialog(self, self.connector_page)
+        self.connected_provider = None
+        self.reminder = None
 
         # Shared header: navigation controls and a centered home button.
         header = QFrame()
@@ -943,15 +1466,31 @@ class MainWindow(QMainWindow):
         home.setCursor(Qt.PointingHandCursor)
         home.clicked.connect(self.show_home)
         self.home_button = home
-        right_spacer = QWidget()
-        right_spacer.setFixedWidth(navigation.sizeHint().width())
+
+        self.sample_tag = QLabel("Sample data")
+        self.sample_tag.setObjectName("sampleTag")
+        self.sample_tag.setToolTip("Every scan and chart in this app uses invented sample data.")
+        self.status_pill = StatusPill()
+        self.status_pill.setToolTip("Open the gear to connect an API key.")
+        self.gear_button = QPushButton("⚙")
+        self.gear_button.setObjectName("gear")
+        self.gear_button.setCursor(Qt.PointingHandCursor)
+        self.gear_button.setToolTip("API settings")
+        self.gear_button.clicked.connect(self.show_api_settings)
+        status_cluster = QWidget()
+        status_layout = QHBoxLayout(status_cluster)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(12)
+        status_layout.addWidget(self.sample_tag)
+        status_layout.addWidget(self.status_pill)
+        status_layout.addWidget(self.gear_button)
+
+        # Equal stretch on both sides keeps the home button centred.
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 0, 24, 0)
-        header_layout.addWidget(navigation)
-        header_layout.addStretch()
-        header_layout.addWidget(home)
-        header_layout.addStretch()
-        header_layout.addWidget(right_spacer)
+        header_layout.addWidget(navigation, 1, Qt.AlignLeft | Qt.AlignVCenter)
+        header_layout.addWidget(home, 0)
+        header_layout.addWidget(status_cluster, 1, Qt.AlignRight | Qt.AlignVCenter)
         self._update_navigation_buttons()
 
         root = QWidget()
@@ -963,7 +1502,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
-        self.home_page.dashboard_requested.connect(self.show_history)
+        self.home_page.history_requested.connect(self.show_history)
+        self.home_page.new_scan_requested.connect(self.new_scan)
         self.history_page.new_scan.connect(self.new_scan)
         self.history_page.record_selected.connect(self.open_record)
         self.scan_page.finished.connect(self.add_record)
@@ -976,16 +1516,44 @@ class MainWindow(QMainWindow):
     def show_stats(self):
         self._navigate_to(self.STATS)
 
-    def show_connector(self):
-        self._navigate_to(self.CONNECT)
+    def show_api_settings(self):
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
 
     def on_llm_connected(self, provider_key, provider_label):
         self.connected_provider = (provider_key, provider_label)
-        print(f"Successfully connected to {provider_label} ({provider_key})")
+        self.status_pill.set_state("ok")
+        self.status_pill.setToolTip(f"Connected to {provider_label}")
 
     def on_llm_disconnected(self):
         self.connected_provider = None
-        print("LLM disconnected.")
+        self.status_pill.set_state("off")
+        self.status_pill.setToolTip("Open the gear to connect an API key.")
+
+    def on_llm_connect_failed(self, message):
+        self.connected_provider = None
+        self.status_pill.set_state("error")
+        self.status_pill.setToolTip(f"The key was rejected: {message}")
+
+    def _on_api_key_edited(self, text):
+        # Clearing the key after a rejection goes back to the pulsing "not connected" state.
+        if not text.strip() and self.status_pill.state() == "error":
+            self.on_llm_disconnected()
+
+    def maybe_show_reminder(self):
+        """Show the Getting started reminder unless the user opted out. Returns the dialog or None."""
+        if reminder_hidden(self.app_settings):
+            return None
+        dialog = GettingStartedDialog(self)
+        dialog.finished.connect(lambda _result, d=dialog: self._on_reminder_closed(d))
+        self.reminder = dialog
+        dialog.show()
+        return dialog
+
+    def _on_reminder_closed(self, dialog):
+        if dialog.dont_show.isChecked():
+            set_reminder_hidden(self.app_settings, True)
 
     def show_history(self):
         self._navigate_to(self.HISTORY)
@@ -1110,4 +1678,5 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
+    window.maybe_show_reminder()
     sys.exit(app.exec_())

@@ -231,3 +231,79 @@ SEED_HISTORY = [
     ScanRecord("sample-org/clean-service", "Claude Opus", "Demo", "Oct 18, 2026",
                [], ["# invented sample scan", "[done] 0 findings"], "n/a", "n/a"),
 ]
+
+
+# SAMPLE DATA (invented): open findings per week for each sample repo, for the burndown
+# charts. Not real scan results.
+ALL_REPOS = "All repos"
+BURNDOWN_WEEKS = ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5", "Week 6"]
+BURNDOWN_BY_REPO = {
+    "sample-org/sample-backend": [7, 7, 6, 6, 5, 5],
+    "sample-org/payments-api": [1, 1, 1, 1, 0, 0],
+    "sample-org/clean-service": [0, 0, 0, 0, 0, 0],
+}
+# The demo replay always produces this repo's sample findings, so its chart stands in for any repo.
+DEFAULT_BURNDOWN_REPO = "sample-org/sample-backend"
+
+
+def burndown_series(repo=ALL_REPOS):
+    """[(week label, open findings), ...] for one sample repo, or summed across all of them."""
+    if repo == ALL_REPOS:
+        values = [sum(week) for week in zip(*BURNDOWN_BY_REPO.values())]
+    else:
+        values = BURNDOWN_BY_REPO.get(repo, BURNDOWN_BY_REPO[DEFAULT_BURNDOWN_REPO])
+    return list(zip(BURNDOWN_WEEKS, values))
+
+
+def burndown_totals(series):
+    """(open, closed, total) from a burndown series: total is the first point, open the last."""
+    if not series:
+        return 0, 0, 0
+    total, still_open = series[0][1], series[-1][1]
+    return still_open, total - still_open, total
+
+
+# Scan phases shown in the scanning popup, in the order the scan log reaches them.
+SCAN_PHASES = ["Recon", "Hunt", "Verification", "Report"]
+HUNT_PHASE = 1
+SCAN_PHRASES = [
+    ["Detecting...", "Analyzing your repository...", "Scanning your code...",
+     "Mapping entry points..."],
+    ["Searching for vulnerabilities...", "Hunting for bugs...", "Hunting for vulnerabilities...",
+     "Looking for weak spots...", "Checking for exposed secrets...", "Tracing where input goes...",
+     "Tracing input to risky code...", "Checking every entry point...", "Sweeping the codebase...",
+     "Tracking down vulnerabilities...", "On the hunt...", "Following the trail...",
+     "Sniffing out bugs...", "Flushing out hidden flaws...", "Closing in on a finding...",
+     "Bagging the bugs...", "Asking the code some hard questions..."],
+    ["Ruling out false alarms..."],
+    ["Sorting by severity...", "Almost there. Counting what's left..."],
+]
+
+_PHASE_PREFIXES = (
+    ("[phase 4]", 3), ("[done]", 3), ("[+]", 3),
+    ("[phase 3", 2), ("[phase 2b]", 2),
+    ("[phase 2]", 1),
+    ("[phase 1]", 0), ("[scan]", 0),
+)
+
+
+def phase_of_line(line, current=0):
+    """Scan phase (0 to 3) a log line belongs to. Blank or unknown lines keep the current
+    phase, and the phase never moves backwards."""
+    for prefix, phase in _PHASE_PREFIXES:
+        if line.startswith(prefix):
+            return max(current, phase)
+    return current
+
+
+def severity_summary(findings):
+    """[(severity tier, count), ...] for the tiers that have findings, highest first."""
+    return [(tier, n) for tier in SEVERITY_ORDER
+            if (n := sum(f.severity == tier for f in findings))]
+
+
+def result_level(findings):
+    """'none' with no findings, 'high' if any High+ or High, otherwise 'other'."""
+    if not findings:
+        return "none"
+    return "high" if any(f.severity in ("High+", "High") for f in findings) else "other"
