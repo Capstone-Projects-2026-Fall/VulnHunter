@@ -435,3 +435,10 @@ def finding_sort_key(finding, field, repo=""):
     if field == "repo":
         return (repo.casefold(), severity_rank(finding.severity), _natural(finding.id))
     raise ValueError(f"unknown sort field: {field}")
+
+
+def repo_name(repo):
+    """'https://github.com/org/name(.git)' -> 'org/name', so one repo has one name. Other text is kept."""
+    text = (repo or "").strip()
+    match = re.fullmatch(r"(?:https?://)?(?:www\.)?github\.com/(.+?)(?:\.git)?/*", text, re.IGNORECASE)
+    return match.group(1) if match else text

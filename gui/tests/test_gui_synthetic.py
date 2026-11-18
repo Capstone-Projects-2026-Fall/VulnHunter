@@ -111,7 +111,7 @@ def test_empty_history_page(qapp):
     page = HistoryPage()
     page.refresh([])
     assert page.table.rowCount() == 0
-    assert [label.text() for label in page.card_values.values()] == ["0", "0", "0"]
+    assert page.summary.text() == "0 scans · 0 findings · 0 verified"
 
 
 def test_history_header_click_toggles_sort_and_right_click_clears(qapp):
@@ -238,8 +238,7 @@ def test_model_dropdown_selection_can_change(qapp):
 def test_home_navigation(qapp):
     window = MainWindow()
     assert window.stack.currentIndex() == window.HOME
-    assert not window.back_button.isEnabled()
-    assert not window.forward_button.isEnabled()
+    assert window._page_history_position == 0
 
     window.home_page.new_scan_requested.emit()
     assert window.stack.currentIndex() == window.SCAN
@@ -253,11 +252,10 @@ def test_home_navigation(qapp):
 
     window.go_back()
     assert window.stack.currentIndex() == window.FINDINGS
-    assert window.back_button.isEnabled()
-    assert window.forward_button.isEnabled()
     window.go_forward()
     assert window.stack.currentIndex() == window.REPORTS
-    assert not window.forward_button.isEnabled()
+    window.go_forward()  # nothing further
+    assert window.stack.currentIndex() == window.REPORTS
 
 
 def test_navigation_shortcuts_and_branching_history(qapp):
@@ -286,11 +284,7 @@ def test_navigation_shortcuts_and_branching_history(qapp):
     window.go_back()
     window.show_home()
     assert window.stack.currentIndex() == window.HOME
-    assert not window.forward_button.isEnabled()
-    assert window.back_button.text() == "‹"
-    assert window.forward_button.text() == "›"
-    assert window.back_button.objectName() == "backNavigation"
-    assert window.forward_button.objectName() == "forwardNavigation"
+    assert window._page_history_position == len(window._page_history) - 1  # a new page drops "forward"
 
 
 def test_default_window_size_fits_screen_but_not_below_minimum():
@@ -683,7 +677,7 @@ def test_a_dispute_is_remembered_across_sessions_and_scans(qapp, tmp_path):
     assert again.reason == gui.DISPUTE_REASONS[2] and again.note == "Would break the cluster"
     assert select_finding(second.scan_page, "VULN-006").status != "Fix accepted"
     assert gui.load_disputes(QSettings(ini, QSettings.IniFormat)).keys() == {
-        f"{gui.REPO_URL}|VULN-005"}
+        f"{gui.repo_name(gui.REPO_URL)}|VULN-005"}
 
 
 def test_disputes_ignore_damaged_saved_data(qapp, tmp_path):
@@ -961,7 +955,7 @@ def test_history_filters_narrow_the_list_and_the_cards(qapp):
 
     page.repo_filter.setCurrentText("sample-org/sample-backend")
     assert page.table.rowCount() == 2
-    assert page.card_values["Scans"].text() == "2"
+    assert page.summary.text().startswith("2 scans")
 
     page.model_filter.setCurrentText("DeepSeek")
     assert page.table.rowCount() == 1
@@ -1048,13 +1042,13 @@ def test_open_by_severity_and_cwe_helpers():
     assert open_by_severity(sample_repo_findings("sample-org/payments-api")) == {}
 
 
-def test_breadcrumbs_lead_back(qapp):
+def test_only_the_scan_page_has_a_breadcrumb(qapp):
     window = MainWindow(QSettings())
-    window.show_history()
-    window.findings_page.breadcrumb.back_btn.click()
-    assert window.stack.currentIndex() == window.HOME
+    assert not hasattr(window.findings_page, "breadcrumb") and not hasattr(window.reports_page, "breadcrumb")
+    assert not hasattr(window.history_page, "breadcrumb")
+
     window.show_reports()
-    window.reports_page.breadcrumb.back_btn.click()
+    window.home_button.click()  # the logo is the way home
     assert window.stack.currentIndex() == window.HOME
 
     window.open_record(0)  # from the Scan runs tab
@@ -1596,7 +1590,9 @@ def test_board_lists_the_latest_scan_of_each_repo(qapp):
     expected = sum(len(window.history[i].findings) for i in latest.values())
     assert page.table.rowCount() == expected == 8
     assert page.repo_filter.count() == 1 + len(latest)
-    assert sum(int(v.text()) for v in page.group_values.values()) == expected
+    counts = {name: int(chip.text().rsplit(" ", 1)[1]) for name, chip in page.chips.items()}
+    assert counts["All"] == expected
+    assert sum(v for name, v in counts.items() if name != "All") == expected
     severities = [page.table.item(r, 1).text() for r in range(page.table.rowCount())]
     assert severities == sorted(severities, key=gui.SEVERITY_ORDER.index)
     assert [page.table.horizontalHeaderItem(c).text() for c in range(page.table.columnCount())] == [
@@ -1619,7 +1615,7 @@ def test_board_sorts_by_header_click(qapp):
     assert not page.table.horizontalHeader().isSortIndicatorShown()
 
 
-def test_board_filters_and_cards_narrow_the_list(qapp):
+def test_board_filters_and_chips_narrow_the_list(qapp):
     window = MainWindow(QSettings())
     page = window.findings_page
     page.refresh(window.history)
@@ -1628,6 +1624,7 @@ def test_board_filters_and_cards_narrow_the_list(qapp):
     page.severity_filter.setCurrentText("Low")
     assert 0 < page.table.rowCount() < total
     assert all(page.table.item(r, 1).text() == "Low" for r in range(page.table.rowCount()))
+    assert page.chips["All"].text() == f"All {page.table.rowCount()}"  # the counts follow the other filters
     page.reset_btn.click()
     assert page.table.rowCount() == total and page.search.text() == ""
 
@@ -1635,14 +1632,13 @@ def test_board_filters_and_cards_narrow_the_list(qapp):
     assert {page.table.item(r, 3).text() for r in range(page.table.rowCount())} == {"sample-org/payments-api"}
     page.reset_filters()
 
-    card = page.findChildren(gui.ClickableCard)[0]
-    card.clicked.emit()
-    assert page.status_filter.currentText() == "Open"
+    page.chips["Open"].click()
+    assert page._status == "Open" and page.chips["Open"].isChecked() and not page.chips["All"].isChecked()
     assert all(gui.status_group(f.status) == "Open" for _i, _r, f in page._shown)
     page.search.setText("no such finding anywhere")
     assert page.table.rowCount() == 0 and not page.empty.isHidden()
     page.reset_filters()
-    assert page.empty.isHidden()
+    assert page.empty.isHidden() and page._status is None and page.chips["All"].isChecked()
 
 
 def test_findings_page_has_two_tabs_and_holds_the_scan_runs(qapp):
@@ -1650,13 +1646,17 @@ def test_findings_page_has_two_tabs_and_holds_the_scan_runs(qapp):
     page = window.findings_page
     assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["All findings", "Scan runs"]
     assert page.pages.widget(1) is window.history_page
-    assert window.history_page.breadcrumb.isHidden() and window.history_page.title.isHidden()
+    assert window.history_page.title.isHidden()
     window.show_history()
     assert window.stack.currentIndex() == window.FINDINGS and page.tabs.currentIndex() == 1
     window.show_findings()
     assert page.tabs.currentIndex() == 0
     window.home_page.findings_requested.emit()
     assert window.stack.currentIndex() == window.FINDINGS
+
+    window.show_history()  # New scan sits beside the tabs and works from either one
+    page.new_scan_btn.click()
+    assert window.stack.currentIndex() == window.SCAN
 
 
 def test_choosing_a_finding_opens_its_scan_with_the_details_open(qapp):
@@ -1685,8 +1685,8 @@ def test_a_dispute_shows_up_on_the_board(qapp):
 
     window.show_findings()
     board = window.findings_page
-    assert int(board.group_values["Disputed"].text()) == 1
-    board.status_filter.setCurrentText("Disputed")
+    assert board.chips["Disputed"].text() == "Disputed 1"
+    board.chips["Disputed"].click()
     assert board.table.rowCount() == 1 and board.table.item(0, 5).text() == "Disputed"
 
 
@@ -1738,3 +1738,134 @@ def test_pressing_the_action_buttons_does_not_jump_to_the_bottom(qapp):
         assert bar.value() < bar.maximum() - 100
         assert page.table.rowViewportPosition(page._rows.index(panel.finding)) > -page.table.rowHeight(0)
     window.close()
+
+
+# One clean header, one toolbar, and deleting a scan
+
+def test_header_has_no_arrow_buttons_but_the_shortcuts_still_work(qapp):
+    window = MainWindow()
+    assert not hasattr(window, "back_button") and not hasattr(window, "forward_button")
+    assert window.sample_tag.text() == "Sample data" and window.home_button.text() == "VulnHunter"
+    window.show_findings()
+    QApplication.sendEvent(window.home_button, QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.ControlModifier))
+    assert window.stack.currentIndex() == window.HOME
+
+
+def test_repo_names_ignore_the_github_prefix():
+    from gui.data.mock_data import repo_name
+    assert repo_name("https://github.com/sample-org/sample-backend") == "sample-org/sample-backend"
+    assert repo_name("http://www.github.com/org/name.git/") == "org/name"
+    assert repo_name("github.com/org/name") == "org/name"
+    assert repo_name("sample-org/sample-backend") == "sample-org/sample-backend"
+    assert repo_name("C:\\code\\my repo") == "C:\\code\\my repo" and repo_name("") == ""
+
+
+def test_a_scan_of_a_github_url_is_stored_under_the_short_name(qapp):
+    window = MainWindow(QSettings())
+    run_demo_scan(window.scan_page)  # blank repo means the sample URL
+    assert window.history[0].repo == "sample-org/sample-backend"
+    window.findings_page.refresh(window.history)
+    repos = [window.findings_page.table.item(r, 3).text() for r in range(window.findings_page.table.rowCount())]
+    assert "https://github.com/sample-org/sample-backend" not in repos
+    assert window.findings_page.repo_filter.findText("sample-org/sample-backend") >= 0
+    assert window.findings_page.repo_filter.count() == len({r.repo for r in window.history}) + 1
+
+
+def test_old_disputes_saved_under_a_full_url_still_apply(qapp, tmp_path):
+    settings = QSettings(str(tmp_path / "old.ini"), QSettings.IniFormat)
+    settings.setValue(gui.DISPUTES_KEY, '{"https://github.com/sample-org/sample-backend|VULN-005": '
+                                        '{"reason": "False positive", "note": "old"}}')
+    findings = [replace(f) for f in SAMPLE_FINDINGS]
+    gui.apply_disputes(settings, "sample-org/sample-backend", findings)
+    hit = next(f for f in findings if f.id == "VULN-005")
+    assert (hit.status, hit.reason, hit.note) == ("Disputed", "False positive", "old")
+
+
+def test_the_scan_runs_toolbar_puts_search_first_then_filters(qapp):
+    page = HistoryPage()
+    toolbar = page.layout().itemAt(0).layout()
+    order = [toolbar.itemAt(i).widget() for i in range(toolbar.count())]
+    assert order == [page.search, page.repo_filter, page.model_filter, page.reset_btn]
+    page.refresh(SEED_HISTORY)
+    page.search.setText("payments")
+    page.model_filter.setCurrentIndex(1)
+    page.reset_btn.click()
+    assert page.search.text() == "" and page.model_filter.currentIndex() == 0 and page.repo_filter.currentIndex() == 0
+
+
+def test_every_scan_row_ends_with_a_trash_can(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    last = page.table.columnCount() - 1
+    assert page.table.horizontalHeaderItem(last).text() == ""
+    for row in range(page.table.rowCount()):
+        trash = page.table.cellWidget(row, last)
+        assert trash.toolTip() == "Delete this scan" and not trash.icon().isNull()
+
+
+def test_deleting_a_scan_asks_first_by_name(qapp, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+    asked = []
+
+    def fake_question(parent, title, text, buttons, default):
+        asked.append((title, text, default))
+        return answers.pop(0)
+
+    monkeypatch.setattr(QMessageBox, "question", fake_question)
+    answers = [QMessageBox.No, QMessageBox.Yes]
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    got = []
+    page.scan_delete_requested.connect(got.append)
+    row = next(r for r in range(page.table.rowCount()) if page.table.item(r, 0).text() == "sample-org/payments-api")
+    trash = page.table.cellWidget(row, page.TRASH_COLUMN)
+    record_index = page.table.item(row, 0).data(Qt.UserRole)
+
+    trash.click()  # No: nothing is deleted
+    assert got == []
+    trash.click()  # Yes
+    assert got == [record_index]
+    record = SEED_HISTORY[record_index]
+    expected = f'Are you sure you want to delete "{record.repo} ({record.date}, {record.model})"?'
+    assert asked[0] == ("Delete scan", expected, QMessageBox.No)  # the safe answer is the default
+
+
+def test_a_filtered_list_deletes_the_right_scan(qapp, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    window = MainWindow(QSettings())
+    window.history_page.repo_filter.setCurrentText("sample-org/payments-api")
+    before = len(window.history)
+    target = next(i for i, r in enumerate(window.history) if r.repo == "sample-org/payments-api")
+    window.history_page.table.cellWidget(0, window.history_page.TRASH_COLUMN).click()
+
+    assert len(window.history) == before - 1
+    assert all(r.repo != "sample-org/payments-api" for r in window.history)
+    assert window.history_page.summary.text().startswith(f"{before - 1} scans") or \
+        window.history_page.repo_filter.currentText() != "sample-org/payments-api"
+    window.findings_page.refresh(window.history)
+    assert window.findings_page.repo_filter.findText("sample-org/payments-api") < 0
+    assert target < before
+
+
+def test_clicking_beside_the_trash_can_or_its_header_does_not_open_or_sort(qapp):
+    page = HistoryPage()
+    page.refresh(SEED_HISTORY)
+    opened = []
+    page.record_selected.connect(opened.append)
+    page._select_record(0, page.TRASH_COLUMN)
+    assert opened == []
+    page._toggle_sort(page.TRASH_COLUMN)
+    assert page._sort_column is None
+
+
+def test_no_scans_left_after_deleting_every_one(qapp, monkeypatch):
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    window = MainWindow(QSettings())
+    while window.history:
+        window.history_page.table.cellWidget(0, window.history_page.TRASH_COLUMN).click()
+    assert window.history_page.table.rowCount() == 0
+    assert window.history_page.summary.text() == "0 scans · 0 findings · 0 verified"
+    window.findings_page.refresh(window.history)
+    assert window.findings_page.table.rowCount() == 0 and not window.findings_page.empty.isHidden()

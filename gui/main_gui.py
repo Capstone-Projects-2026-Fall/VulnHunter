@@ -21,13 +21,13 @@ if str(ROOT) not in sys.path:
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (
-    QBrush, QColor, QConicalGradient, QDesktopServices, QFont, QPainter, QPainterPath, QPen,
+    QBrush, QColor, QConicalGradient, QDesktopServices, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap,
     QTextCursor, QTextFormat,
 )
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QGridLayout,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
-    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QStyle, QStyledItemDelegate,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QStyle, QStyledItemDelegate,
     QStyleOptionViewItem, QTabBar, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
     QSizePolicy,
 )
@@ -37,7 +37,7 @@ from gui.data.mock_data import (
     MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_PHASES, SCAN_PHRASES, SEED_HISTORY,
     SEVERITY_ORDER, ScanRecord, burndown_series, burndown_totals, code_url, phase_of_line,
     burndown_repo_key, cwe_name, cwe_url, latest_scan_indexes, open_by_severity, result_level, sample_fix,
-    sample_issue, sample_repo_findings, sample_snippet, severity_summary, split_location, status_group,
+    repo_name, sample_issue, sample_repo_findings, sample_snippet, severity_summary, split_location, status_group,
     STATUS_GROUPS, finding_sort_key, severity_rank,
 )
 from llm_connector.conn_all_llm import LLMConnector
@@ -95,6 +95,13 @@ QPushButton#iconButton {
     min-width: 36px; max-width: 36px;
 }
 QPushButton#iconButton:hover { color: #38BDF8; background: transparent; }
+QPushButton#trash { background: transparent; border: 0; border-radius: 6px; padding: 4px; }
+QPushButton#trash:hover { background: rgba(248, 113, 113, 0.18); }
+QPushButton#chip {
+    background: transparent; border: 1px solid #243B5C; border-radius: 15px; padding: 4px 14px; color: #9FB3CC;
+}
+QPushButton#chip:hover { border-color: #38BDF8; }
+QPushButton#chip:checked { background: rgba(56, 189, 248, 0.16); border-color: #38BDF8; color: #38BDF8; }
 QLabel#popupTitle { font-size: 22px; font-weight: 600; }
 QLabel#phrase { font-size: 22px; font-weight: 500; }
 QPushButton#link {
@@ -187,6 +194,35 @@ def zoom_stylesheet(scale):
         f"QTableWidget {{ font-size: {round(18 * scale)}px; }}\n"
         f"QHeaderView::section {{ font-size: {round(18 * scale)}px; }}"
     )
+
+
+def trash_icon():
+    """A small trash can, drawn so no icon font is needed."""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor("#9FB3CC"), 1.5)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.drawLine(4, 6, 16, 6)
+    lid = QPainterPath()
+    lid.moveTo(8, 6)
+    lid.lineTo(8, 3.8)
+    lid.lineTo(12, 3.8)
+    lid.lineTo(12, 6)
+    painter.drawPath(lid)
+    body = QPainterPath()
+    body.moveTo(5.5, 7.5)
+    body.lineTo(6.6, 16.5)
+    body.lineTo(13.4, 16.5)
+    body.lineTo(14.5, 7.5)
+    painter.drawPath(body)
+    painter.drawLine(QPointF(8.8, 9.5), QPointF(9, 14.5))
+    painter.drawLine(QPointF(11.2, 9.5), QPointF(11, 14.5))
+    painter.end()
+    return QIcon(pixmap)
 
 
 def make_table(headers):
@@ -576,15 +612,12 @@ class BurndownChart(QWidget):
 
 class ReportsPage(QWidget):
     """Reports: Overview, Providers and Quality tabs. Everything here is invented sample data."""
-    back_requested = pyqtSignal()
     new_scan_requested = pyqtSignal()
     TABS = ("Overview", "Providers", "Quality")
     BAR_WIDTH = 220
 
     def __init__(self):
         super().__init__()
-        self.breadcrumb = Breadcrumb("Home", "Reports")
-        self.breadcrumb.back_clicked.connect(self.back_requested)
         title = QLabel("Reports")
         title.setObjectName("statsTitle")
         self.tabs = QTabBar()
@@ -601,7 +634,6 @@ class ReportsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 24)
         layout.setSpacing(10)
-        layout.addWidget(self.breadcrumb)
         layout.addWidget(title)
         layout.addWidget(self.tabs, 0, Qt.AlignLeft)
         layout.addWidget(self.pages, 1)
@@ -778,37 +810,16 @@ ALL_MODELS = "All models"
 
 
 class HistoryPage(QWidget):
-    new_scan = pyqtSignal()
-    back_requested = pyqtSignal()
+    """The list of scan runs. Lives inside the Findings page as its second tab."""
     record_selected = pyqtSignal(int)
+    scan_delete_requested = pyqtSignal(int)  # index in the history, after the user confirmed
+    HEADERS = ["Repository", "Model", "Mode", "Date", "Findings", "Tokens", "Duration", ""]
+    TRASH_COLUMN = 7
 
     def __init__(self):
         super().__init__()
-        title = QLabel("Scan History")
-        title.setObjectName("title")
-        self.title = title
-        new_btn = QPushButton("New Scan")
-        new_btn.setObjectName("primary")
-        new_btn.clicked.connect(lambda: self.new_scan.emit())
-
-        top = QHBoxLayout()
-        top.addWidget(title)
-        top.addStretch()
-        top.addWidget(new_btn)
-
-        cards = QHBoxLayout()
-        cards.setSpacing(12)
-        self.card_values = {}
-        for name in ("Scans", "Findings", "Verified"):
-            card = QFrame()
-            card.setObjectName("card")
-            box = QVBoxLayout(card)
-            value = QLabel("0")
-            value.setObjectName("cardValue")
-            box.addWidget(value)
-            box.addWidget(QLabel(name))
-            self.card_values[name] = value
-            cards.addWidget(card)
+        self.title = QLabel("Scan History", self)  # the Findings page title covers it; kept for the window title
+        self.title.hide()
 
         self.repo_filter = QComboBox()
         self.repo_filter.addItem(ALL_REPOS)
@@ -818,17 +829,24 @@ class HistoryPage(QWidget):
         self.model_filter.setToolTip("Show scans run with one model.")
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search scans")
+        self.reset_btn = QPushButton("Reset to default")
+        self.reset_btn.setObjectName("link")
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.clicked.connect(self.reset_filters)
         self.repo_filter.currentIndexChanged.connect(self._render)
         self.model_filter.currentIndexChanged.connect(self._render)
         self.search.textChanged.connect(self._render)
-        filters = QHBoxLayout()
-        filters.setSpacing(10)
-        filters.addWidget(self.repo_filter)
-        filters.addWidget(self.model_filter)
-        filters.addWidget(self.search, 1)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        toolbar.addWidget(self.search, 1)
+        toolbar.addWidget(self.repo_filter)
+        toolbar.addWidget(self.model_filter)
+        toolbar.addWidget(self.reset_btn)
 
-        self.table = make_table(
-            ["Repository", "Model", "Mode", "Date", "Findings", "Tokens", "Duration"])
+        self.summary = QLabel()
+        self.summary.setObjectName("muted")
+
+        self.table = make_table(self.HEADERS)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setColumnWidth(1, 160)
         self.table.setColumnWidth(2, 100)
@@ -836,6 +854,7 @@ class HistoryPage(QWidget):
         self.table.setColumnWidth(4, 115)
         self.table.setColumnWidth(5, 100)
         self.table.setColumnWidth(6, 115)
+        self.table.setColumnWidth(self.TRASH_COLUMN, 56)
         self._records = []
         self._sort_column = None
         self._sort_order = Qt.AscendingOrder
@@ -848,20 +867,16 @@ class HistoryPage(QWidget):
         self.table.cellClicked.connect(self._select_record)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-        self.breadcrumb = Breadcrumb("Home", "Scan History")
-        self.breadcrumb.back_clicked.connect(self.back_requested)
-        layout.addWidget(self.breadcrumb)
-        layout.addLayout(top)
-        layout.addLayout(cards)
-        layout.addLayout(filters)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(12)
+        layout.addLayout(toolbar)
+        layout.addWidget(self.summary)
         layout.addWidget(self.table, 1)
 
-    def set_embedded(self, embedded):
-        """Inside the Findings page the breadcrumb and title belong to that page."""
-        self.breadcrumb.setVisible(not embedded)
-        self.title.setVisible(not embedded)
+    def reset_filters(self):
+        self.search.clear()
+        self.repo_filter.setCurrentIndex(0)
+        self.model_filter.setCurrentIndex(0)
 
     def refresh(self, records):
         self._records = list(records)
@@ -901,10 +916,9 @@ class HistoryPage(QWidget):
     def _render(self, *_args):
         indexed_records = self._visible_records()
         findings = [f for _index, rec in indexed_records for f in rec.findings]
-        counts = (len(indexed_records), len(findings),
-                  sum(f.status == "Verified" for f in findings))
-        for label, count in zip(self.card_values.values(), counts):
-            label.setText(str(count))
+        scans, verified = len(indexed_records), sum(f.status == "Verified" for f in findings)
+        self.summary.setText(f"{scans} {'scan' if scans == 1 else 'scans'} · "
+                             f"{len(findings)} {'finding' if len(findings) == 1 else 'findings'} · {verified} verified")
 
         if self._sort_column is not None:
             indexed_records.sort(
@@ -921,12 +935,21 @@ class HistoryPage(QWidget):
                 if col == 0:
                     item.setData(Qt.UserRole, record_index)
                 self.table.setItem(row, col, item)
+            trash = QPushButton()
+            trash.setObjectName("trash")
+            trash.setIcon(trash_icon())
+            trash.setCursor(Qt.PointingHandCursor)
+            trash.setToolTip("Delete this scan")
+            trash.clicked.connect(lambda _checked=False, i=record_index: self._ask_delete(i))
+            self.table.setCellWidget(row, self.TRASH_COLUMN, trash)
         self.table.resizeRowsToContents()
         if self._sort_column is not None:
             self.table.horizontalHeader().setSortIndicator(
                 self._sort_column, self._sort_order)
 
     def _toggle_sort(self, column):
+        if column >= self.TRASH_COLUMN:
+            return
         if self._sort_column != column:
             order = Qt.AscendingOrder
         elif self._sort_order == Qt.AscendingOrder:
@@ -946,7 +969,22 @@ class HistoryPage(QWidget):
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self._render()
 
-    def _select_record(self, row, _column):
+    def confirm_delete(self, label):
+        answer = QMessageBox.question(
+            self, "Delete scan", f'Are you sure you want to delete "{label}"?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def _ask_delete(self, record_index):
+        if not 0 <= record_index < len(self._records):
+            return
+        record = self._records[record_index]
+        if self.confirm_delete(f"{record.repo} ({record.date}, {record.model})"):
+            self.scan_delete_requested.emit(record_index)
+
+    def _select_record(self, row, column):
+        if column == self.TRASH_COLUMN:
+            return
         item = self.table.item(row, 0)
         if item is not None:
             self.record_selected.emit(item.data(Qt.UserRole))
@@ -988,10 +1026,9 @@ class HistoryPage(QWidget):
 
 class FindingsPage(QWidget):
     """Findings: a board of every finding (latest scan of each repo) and the list of scan runs, as two tabs."""
-    back_requested = pyqtSignal()
+    new_scan_requested = pyqtSignal()
     finding_selected = pyqtSignal(int, str)  # index of the scan in the history, finding id
     ALL_SEVERITIES = "All severities"
-    ALL_STATUSES = "All statuses"
     TABS = ("All findings", "Scan runs")
     COLUMNS = ("ID", "Severity", "Finding", "Repository", "Location", "Status")
     SORT_FIELDS = ("id", "severity", "title", "repo", "location", "status")
@@ -1000,13 +1037,11 @@ class FindingsPage(QWidget):
         super().__init__()
         self._entries = []  # (history index, repo, finding)
         self._shown = []
+        self._status = None  # a status group, or None for all
         self._sort_field = None
         self._sort_order = Qt.AscendingOrder
         self.history_page = history_page
-        self.history_page.set_embedded(True)
 
-        self.breadcrumb = Breadcrumb("Home", "Findings")
-        self.breadcrumb.back_clicked.connect(self.back_requested)
         title = QLabel("Findings")
         title.setObjectName("statsTitle")
         self.tabs = QTabBar()
@@ -1014,6 +1049,13 @@ class FindingsPage(QWidget):
         self.tabs.setExpanding(False)
         for name in self.TABS:
             self.tabs.addTab(name)
+        self.new_scan_btn = QPushButton("New Scan")
+        self.new_scan_btn.setObjectName("primary")
+        self.new_scan_btn.clicked.connect(self.new_scan_requested)
+        tab_row = QHBoxLayout()
+        tab_row.addWidget(self.tabs)
+        tab_row.addStretch()
+        tab_row.addWidget(self.new_scan_btn)
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_board())
         self.pages.addWidget(self.history_page)
@@ -1022,9 +1064,8 @@ class FindingsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 24)
         layout.setSpacing(10)
-        layout.addWidget(self.breadcrumb)
         layout.addWidget(title)
-        layout.addWidget(self.tabs, 0, Qt.AlignLeft)
+        layout.addLayout(tab_row)
         layout.addWidget(self.pages, 1)
 
     def show_tab(self, index):
@@ -1032,44 +1073,42 @@ class FindingsPage(QWidget):
 
     def _build_board(self):
         page = QWidget()
-        strip = QHBoxLayout()
-        strip.setSpacing(12)
-        self.group_values = {}
-        for group in STATUS_GROUPS:
-            card = ClickableCard()
-            card.setToolTip(f"Show only {group.lower()} findings")
-            card.clicked.connect(lambda g=group: self.status_filter.setCurrentText(g))
-            box = QVBoxLayout(card)
-            value = QLabel("0")
-            value.setObjectName("cardValue")
-            box.addWidget(value)
-            box.addWidget(QLabel(group))
-            self.group_values[group] = value
-            strip.addWidget(card)
-
         self.repo_filter = QComboBox()
         self.repo_filter.addItem(ALL_REPOS)
         self.severity_filter = QComboBox()
         self.severity_filter.addItem(self.ALL_SEVERITIES)
         self.severity_filter.addItems(SEVERITY_ORDER)
-        self.status_filter = QComboBox()
-        self.status_filter.addItem(self.ALL_STATUSES)
-        self.status_filter.addItems(list(STATUS_GROUPS))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search findings")
         self.reset_btn = QPushButton("Reset to default")
         self.reset_btn.setObjectName("link")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
         self.reset_btn.clicked.connect(self.reset_filters)
-        for box in (self.repo_filter, self.severity_filter, self.status_filter):
+        for box in (self.repo_filter, self.severity_filter):
             box.currentIndexChanged.connect(self._render)
         self.search.textChanged.connect(self._render)
-        filters = QHBoxLayout()
-        filters.setSpacing(10)
-        for box in (self.repo_filter, self.severity_filter, self.status_filter):
-            filters.addWidget(box)
-        filters.addWidget(self.search, 1)
-        filters.addWidget(self.reset_btn)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        toolbar.addWidget(self.search, 1)
+        toolbar.addWidget(self.repo_filter)
+        toolbar.addWidget(self.severity_filter)
+        toolbar.addWidget(self.reset_btn)
+
+        # Status chips: they filter the list and show how many findings are in each state.
+        self.chips = {}
+        chips = QHBoxLayout()
+        chips.setSpacing(8)
+        for name in ("All",) + tuple(STATUS_GROUPS):
+            chip = QPushButton(name)
+            chip.setObjectName("chip")
+            chip.setCheckable(True)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.setToolTip("Show all findings" if name == "All" else f"Show only {name.lower()} findings")
+            chip.clicked.connect(lambda _checked=False, n=name: self.set_status_filter(None if n == "All" else n))
+            self.chips[name] = chip
+            chips.addWidget(chip)
+        chips.addStretch()
+        self.chips["All"].setChecked(True)
 
         self.table = make_table(list(self.COLUMNS))
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -1094,8 +1133,8 @@ class FindingsPage(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(12)
-        layout.addLayout(strip)
-        layout.addLayout(filters)
+        layout.addLayout(toolbar)
+        layout.addLayout(chips)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.empty)
         layout.addWidget(note)
@@ -1116,10 +1155,18 @@ class FindingsPage(QWidget):
         self.repo_filter.blockSignals(False)
         self._render()
 
+    def set_status_filter(self, group):
+        """Show one status group (Open, In progress, Disputed, Done), or all findings with None."""
+        self._status = group
+        for name, chip in self.chips.items():
+            chip.setChecked(name == (group or "All"))
+        self._render()
+
     def reset_filters(self):
-        for box in (self.repo_filter, self.severity_filter, self.status_filter):
+        for box in (self.repo_filter, self.severity_filter):
             box.setCurrentIndex(0)
         self.search.clear()
+        self.set_status_filter(None)
 
     def _toggle_sort(self, column):
         field = self.SORT_FIELDS[column]
@@ -1139,30 +1186,31 @@ class FindingsPage(QWidget):
     def _render(self, *_args):
         repo = self.repo_filter.currentText()
         severity = self.severity_filter.currentText()
-        status = self.status_filter.currentText()
         text = self.search.text().strip().casefold()
         matching = []
         for entry in self._entries:
-            _index, repo_name, f = entry
-            if repo != ALL_REPOS and repo_name != repo:
+            _index, repo_name_, f = entry
+            if repo != ALL_REPOS and repo_name_ != repo:
                 continue
             if severity != self.ALL_SEVERITIES and f.severity != severity:
                 continue
-            if text and text not in " ".join((f.id, f.title, f.location, f.cwe, repo_name)).casefold():
+            if text and text not in " ".join((f.id, f.title, f.location, f.cwe, repo_name_)).casefold():
                 continue
             matching.append(entry)
-        for group, label in self.group_values.items():  # the counts ignore the status filter itself
-            label.setText(str(sum(status_group(e[2].status) == group for e in matching)))
-        shown = [e for e in matching if status == self.ALL_STATUSES or status_group(e[2].status) == status]
+        # the chip counts ignore the status filter itself
+        self.chips["All"].setText(f"All {len(matching)}")
+        for group in STATUS_GROUPS:
+            self.chips[group].setText(f"{group} {sum(status_group(e[2].status) == group for e in matching)}")
+        shown = [e for e in matching if self._status is None or status_group(e[2].status) == self._status]
         field = self._sort_field or "severity"
         shown.sort(key=lambda e: finding_sort_key(e[2], field, e[1]),
                    reverse=self._sort_field is not None and self._sort_order == Qt.DescendingOrder)
         self._shown = shown
 
         self.table.setRowCount(len(shown))
-        for row, (_index, repo_name, f) in enumerate(shown):
+        for row, (_index, repo_name_, f) in enumerate(shown):
             colours = SEVERITY_COLORS.get(f.severity)
-            for col, value in enumerate([f.id, f.severity, f.title, repo_name, f.location, f.status]):
+            for col, value in enumerate([f.id, f.severity, f.title, repo_name_, f.location, f.status]):
                 item = QTableWidgetItem(value)
                 if colours:
                     item.setBackground(QColor(colours[0]))
@@ -1215,12 +1263,15 @@ def load_disputes(settings):
         data = json.loads(settings.value(DISPUTES_KEY, "{}", type=str) or "{}")
     except (TypeError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # keys saved with a full github.com URL still match the short name
+    return {f"{repo_name(key.rpartition('|')[0])}|{key.rpartition('|')[2]}": value for key, value in data.items()}
 
 
 def save_dispute(settings, repo, finding):
     disputes = load_disputes(settings)
-    disputes[f"{repo}|{finding.id}"] = {"reason": finding.reason, "note": finding.note}
+    disputes[f"{repo_name(repo)}|{finding.id}"] = {"reason": finding.reason, "note": finding.note}
     settings.setValue(DISPUTES_KEY, json.dumps(disputes))
     settings.sync()
 
@@ -1229,7 +1280,7 @@ def apply_disputes(settings, repo, findings):
     """Mark findings that were disputed in an earlier session (same repo and id)."""
     disputes = load_disputes(settings)
     for finding in findings:
-        saved = disputes.get(f"{repo}|{finding.id}")
+        saved = disputes.get(f"{repo_name(repo)}|{finding.id}")
         if isinstance(saved, dict):
             apply_decision(finding, "Disputed", str(saved.get("reason", "")), str(saved.get("note", "")))
 
@@ -2243,7 +2294,7 @@ class ScanPage(QWidget):
         self._close_progress()
         # Copies, so a decision on one scan never changes the sample data or other scans.
         findings = [replace(f) for f in self.sample_findings]
-        repo = self.repo.text().strip() or REPO_URL
+        repo = repo_name(self.repo.text().strip() or REPO_URL)
         self._scan_repo = repo
         if self.state_loader is not None:
             self.state_loader(repo, findings)
@@ -2252,7 +2303,7 @@ class ScanPage(QWidget):
         self.scan_btn.setEnabled(True)
         now = datetime.now()
         record = ScanRecord(
-            repo=self.repo.text().strip() or REPO_URL,
+            repo=repo,
             model=self.model_box.currentText(),
             mode="Demo",
             date=f"{now:%b} {now.day}, {now.year}",
@@ -2368,25 +2419,10 @@ class MainWindow(QMainWindow):
         self.api_popover = None
         self.connected_provider = None
 
-        # Shared header: navigation controls and a centered home button.
+        # Shared header: sample tag on the left, the home button centred, API status and help on the right.
         header = QFrame()
         header.setObjectName("header")
         header.setFixedHeight(72)
-        self.back_button = QPushButton("‹")
-        self.back_button.setObjectName("backNavigation")
-        self.back_button.setToolTip("Go to the previous page (Ctrl/Cmd+Left)")
-        self.back_button.clicked.connect(self.go_back)
-        self.forward_button = QPushButton("›")
-        self.forward_button.setObjectName("forwardNavigation")
-        self.forward_button.setToolTip("Go to the next page (Ctrl/Cmd+Right)")
-        self.forward_button.clicked.connect(self.go_forward)
-        navigation = QWidget()
-        navigation_layout = QHBoxLayout(navigation)
-        navigation_layout.setContentsMargins(0, 0, 0, 0)
-        navigation_layout.setSpacing(8)
-        navigation_layout.addWidget(self.back_button)
-        navigation_layout.addWidget(self.forward_button)
-
         home = QPushButton("VulnHunter")
         home.setObjectName("home")
         home.setMinimumSize(300, 52)
@@ -2408,17 +2444,15 @@ class MainWindow(QMainWindow):
         status_layout = QHBoxLayout(status_cluster)
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(12)
-        status_layout.addWidget(self.sample_tag)
         status_layout.addWidget(self.status_pill)
         status_layout.addWidget(self.help_button)
 
         # Equal stretch on both sides keeps the home button centred.
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(24, 0, 24, 0)
-        header_layout.addWidget(navigation, 1, Qt.AlignLeft | Qt.AlignVCenter)
+        header_layout.addWidget(self.sample_tag, 1, Qt.AlignLeft | Qt.AlignVCenter)
         header_layout.addWidget(home, 0)
         header_layout.addWidget(status_cluster, 1, Qt.AlignRight | Qt.AlignVCenter)
-        self._update_navigation_buttons()
 
         root = QWidget()
         root.setObjectName("root")
@@ -2430,12 +2464,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         self.home_page.new_scan_requested.connect(self.new_scan)
-        self.history_page.new_scan.connect(self.new_scan)
+        self.history_page.scan_delete_requested.connect(self.delete_scan)
         self.scan_page.back_requested.connect(self._leave_scan)
-        self.findings_page.back_requested.connect(self.show_home)
+        self.findings_page.new_scan_requested.connect(self.new_scan)
         self.findings_page.finding_selected.connect(self.open_finding)
         self.stack.currentChanged.connect(self._on_page_changed)
-        self.reports_page.back_requested.connect(self.show_home)
         self.reports_page.new_scan_requested.connect(self.new_scan)
         self.home_page.getting_started_closed.connect(self._on_getting_started_closed)
         self.history_page.record_selected.connect(self.open_record)
@@ -2550,26 +2583,25 @@ class MainWindow(QMainWindow):
         self._page_history.append(page_index)
         self._page_history_position += 1
         self.stack.setCurrentIndex(page_index)
-        self._update_navigation_buttons()
 
     def go_back(self):
         if self._page_history_position == 0:
             return
         self._page_history_position -= 1
         self.stack.setCurrentIndex(self._page_history[self._page_history_position])
-        self._update_navigation_buttons()
 
     def go_forward(self):
         if self._page_history_position >= len(self._page_history) - 1:
             return
         self._page_history_position += 1
         self.stack.setCurrentIndex(self._page_history[self._page_history_position])
-        self._update_navigation_buttons()
 
-    def _update_navigation_buttons(self):
-        self.back_button.setEnabled(self._page_history_position > 0)
-        self.forward_button.setEnabled(
-            self._page_history_position < len(self._page_history) - 1)
+    def delete_scan(self, index):
+        """Remove a scan (already confirmed) from the history and the findings board."""
+        if 0 <= index < len(self.history):
+            del self.history[index]
+            self.history_page.refresh(self.history)
+            self.findings_page.refresh(self.history)
 
     def add_record(self, record):
         self.history.insert(0, record)
