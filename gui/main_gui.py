@@ -16,8 +16,8 @@ from PyQt5.QtGui import QBrush, QColor, QConicalGradient, QFont, QPainter, QPain
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget, QSizePolicy,
+    QPlainTextEdit, QPushButton, QStackedWidget, QStyle, QStyledItemDelegate,
+    QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from gui.data.mock_data import (
@@ -48,8 +48,8 @@ QLabel#severityDetail { font-size: 16px; }
 QLabel#statsTitle { font-size: 28px; font-weight: 600; }
 QLabel#cardValue { font-size: 26px; font-weight: 600; }
 QPushButton#home {
-    background: transparent; border: 0; color: #E6EEF8; font-size: 20px;
-    font-weight: 600; padding: 0 12px;
+    background: transparent; border: 0; color: #E6EEF8; font-size: 28px;
+    font-weight: 700; padding: 0 12px;
 }
 QPushButton#backNavigation, QPushButton#forwardNavigation {
     background: transparent; border: 0; color: #E6EEF8;
@@ -70,15 +70,16 @@ QLabel#statusPill {
 QLabel#statusPill[state="off"] { color: #F5C451; border-color: #6B5A1F; background: #2A2410; }
 QLabel#statusPill[state="ok"] { color: #4ADE80; border-color: #1F5A38; background: #0F2A1C; }
 QLabel#statusPill[state="error"] { color: #F87171; border-color: #6B2A2A; background: #2A1010; }
+QLabel#statusPill[hover="true"] { border-color: #E6EEF8; }
 QLabel#sampleTag {
     font-size: 13px; color: #9FB3CC; border: 1px solid #223A5A; border-radius: 11px;
     padding: 2px 10px; background: transparent;
 }
-QPushButton#gear {
+QPushButton#iconButton {
     background: transparent; border: 0; color: #9FB3CC; font-size: 26px; padding: 0;
     min-width: 36px; max-width: 36px;
 }
-QPushButton#gear:hover { color: #38BDF8; background: transparent; }
+QPushButton#iconButton:hover { color: #38BDF8; background: transparent; }
 QLabel#popupTitle { font-size: 22px; font-weight: 600; }
 QLabel#phrase { font-size: 22px; font-weight: 500; }
 QPushButton#link {
@@ -129,6 +130,16 @@ QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 
 
 MIN_WINDOW_SIZE = (1300, 700)
+HOME_BUTTON_PX = 28  # the VulnHunter logo button in the header; keeps its size when zooming
+
+# Severity colours: (row background, text). Shared by the findings list, the tracker and the result card.
+SEVERITY_COLORS = {
+    "High+": ("#4A1220", "#FF9AA5"),  # dark red
+    "High": ("#5E1F24", "#FF8080"),  # red
+    "Medium": ("#5A3A14", "#FFB35C"),  # orange
+    "Low": ("#54481A", "#FFE08A"),  # yellow
+    "Informational": ("#1C2A44", "#B7C6DD"),  # blue-grey
+}
 PREFERRED_WINDOW_SIZE = (1360, 920)
 
 
@@ -151,7 +162,7 @@ def zoom_stylesheet(scale):
     stylesheet = scaled_stylesheet(STYLE, scale)
     return (
         f"{stylesheet}\n"
-        "QPushButton#home { font-size: 20px; }\n"
+        f"QPushButton#home {{ font-size: {HOME_BUTTON_PX}px; }}\n"
         f"QTableWidget {{ font-size: {round(18 * scale)}px; }}\n"
         f"QHeaderView::section {{ font-size: {round(18 * scale)}px; }}"
     )
@@ -169,6 +180,31 @@ def make_table(headers):
     table.setEditTriggers(QAbstractItemView.NoEditTriggers)
     table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return table
+
+
+class SeverityRowDelegate(QStyledItemDelegate):
+    """Paints each row in its severity colour. A selected row keeps its colour and gets a light outline."""
+
+    def paint(self, painter, option, index):
+        selected = bool(option.state & QStyle.State_Selected)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.state &= ~QStyle.State_Selected  # the selection colour would hide the severity colour
+        background = index.data(Qt.BackgroundRole)
+        if background is not None:
+            painter.fillRect(option.rect, background)
+        super().paint(painter, opt, index)
+        if selected:
+            painter.save()
+            painter.setPen(QPen(QColor("#E6EEF8"), 2))
+            r = option.rect
+            painter.drawLine(r.left(), r.top() + 1, r.right(), r.top() + 1)
+            painter.drawLine(r.left(), r.bottom() - 1, r.right(), r.bottom() - 1)
+            if index.column() == 0:
+                painter.drawLine(r.left() + 1, r.top(), r.left() + 1, r.bottom())
+            if index.column() == index.model().columnCount() - 1:
+                painter.drawLine(r.right() - 1, r.top(), r.right() - 1, r.bottom())
+            painter.restore()
 
 
 class SeverityTracker(QFrame):
@@ -190,8 +226,9 @@ class SeverityTracker(QFrame):
             count = QLabel("0")
             label.setObjectName("severityHeadline" if headline else "severityDetail")
             count.setObjectName("severityHeadline" if headline else "severityDetail")
-            if headline:
-                count.setStyleSheet("color: #38BDF8;")
+            colours = SEVERITY_COLORS.get(name)
+            if colours:
+                count.setStyleSheet(f"color: {colours[1]};")
             row = QHBoxLayout()
             row.addWidget(label)
             row.addStretch()
@@ -744,7 +781,14 @@ def set_reminder_hidden(settings, hidden):
 
 
 class StatusPill(QLabel):
-    """API status in the header: pulsing yellow until connected, green once it is, red if rejected."""
+    """API status in the header: pulsing yellow until connected, green once it is, red if rejected.
+    Clicking it opens the API settings."""
+    clicked = pyqtSignal()
+    TOOLTIPS = {
+        "off": "Click to enter your API key",
+        "ok": "Click to configure API key",
+        "error": "Click to configure API key",
+    }
     STATES = {
         # state: (label, dot colour, dimmed dot colour while pulsing)
         "off": ("API not connected", "#F5C451", "#6B5A1F"),
@@ -756,6 +800,8 @@ class StatusPill(QLabel):
         super().__init__()
         self.setObjectName("statusPill")
         self.setTextFormat(Qt.RichText)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setProperty("hover", False)
         self._bright = True
         self._timer = QTimer(self)
         self._timer.setInterval(700)
@@ -772,17 +818,37 @@ class StatusPill(QLabel):
     def is_pulsing(self):
         return self._timer.isActive()
 
-    def set_state(self, state):
+    def set_state(self, state, detail=""):
+        """Show a state. `detail` (for example 'Connected to DeepSeek') leads the hover tooltip."""
         self._state = state
+        self.setToolTip(f"{detail}. {self.TOOLTIPS[state]}" if detail else self.TOOLTIPS[state])
         self.setProperty("state", state)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self._repolish()
         self._bright = True
         self._render()
         if self.STATES[state][2]:
             self._timer.start()
         else:
             self._timer.stop()
+
+    def _repolish(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def enterEvent(self, event):
+        self.setProperty("hover", True)
+        self._repolish()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setProperty("hover", False)
+        self._repolish()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
     def _pulse(self):
         self._bright = not self._bright
@@ -796,7 +862,7 @@ class StatusPill(QLabel):
 
 class RadarSpinner(QWidget):
     """A radar sweep that circles while a scan runs."""
-    # (x, y as fractions of the radius, dot size)
+    # (x, y as fractions of the radius, dot size at the default 96px)
     DOTS = ((-0.42, -0.32, 6), (0.32, 0.24, 5), (-0.34, 0.56, 8))
 
     def __init__(self, size=96):
@@ -826,12 +892,13 @@ class RadarSpinner(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         radius = min(self.width(), self.height()) / 2 - 3
+        scale = radius / 45.0  # everything below was drawn for a 96px spinner
         centre = QPointF(self.width() / 2, self.height() / 2)
         disc = QPainterPath()
         disc.addEllipse(centre, radius, radius)
         p.fillPath(disc, QColor("#16294A"))
 
-        p.setPen(QPen(QColor("#3B5575"), 2))
+        p.setPen(QPen(QColor("#3B5575"), max(2.0, 1.4 * scale)))
         p.setBrush(Qt.NoBrush)
         for fraction in (1.0, 0.66, 0.33):
             p.drawEllipse(centre, radius * fraction, radius * fraction)
@@ -857,20 +924,48 @@ class RadarSpinner(QWidget):
             alpha = max(70, int(255 * (1 - behind / 360)))
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(200, 85, 61, alpha))
-            p.drawEllipse(QPointF(centre.x() + dx * radius, centre.y() + dy * radius), size / 2, size / 2)
+            p.drawEllipse(QPointF(centre.x() + dx * radius, centre.y() + dy * radius),
+                          size * scale / 2, size * scale / 2)
 
         angle = math.radians(self._angle)
         tip = QPointF(centre.x() + radius * math.cos(angle), centre.y() - radius * math.sin(angle))
-        p.setPen(QPen(QColor("#A9D1E0"), 4, Qt.SolidLine, Qt.RoundCap))
+        p.setPen(QPen(QColor("#A9D1E0"), 4 * scale, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(centre, tip)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor("#A9D1E0"))
-        p.drawEllipse(centre, 5, 5)
+        p.drawEllipse(centre, 5 * scale, 5 * scale)
 
 
-class BottomPopup(QDialog):
-    """A frameless card that appears at the bottom centre of the main window, clear of the content."""
+class DimOverlay(QWidget):
+    """Darkens the window behind a modal popup and swallows clicks."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        window.installEventFilter(self)
+        self.setGeometry(window.rect())
+        self.show()
+        self.raise_()
+
+    def eventFilter(self, obj, event):
+        if obj is self._window and event.type() == QEvent.Resize:
+            self.setGeometry(self._window.rect())
+            self.raise_()
+        return False
+
+    def paintEvent(self, _event):
+        QPainter(self).fillRect(self.rect(), QColor(0, 0, 0, 150))
+
+    def dismiss(self):
+        self._window.removeEventFilter(self)
+        self.hide()
+        self.deleteLater()
+
+
+class FloatingCard(QDialog):
+    """A frameless rounded card over the main window: at the bottom centre by default, or the middle."""
     MARGIN = 28
+    CENTERED = False
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -886,16 +981,19 @@ class BottomPopup(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self.adjustSize()
-        self.place_at_bottom()
+        self.place()
 
-    def place_at_bottom(self):
+    def place(self):
         parent = self.parentWidget()
         anchor = parent.window() if parent is not None else None
         if anchor is None:
             return
         origin = anchor.mapToGlobal(QPoint(0, 0))
         x = origin.x() + (anchor.width() - self.width()) // 2
-        y = origin.y() + anchor.height() - self.height() - self.MARGIN
+        if self.CENTERED:
+            y = origin.y() + (anchor.height() - self.height()) // 2
+        else:
+            y = origin.y() + anchor.height() - self.height() - self.MARGIN
         self.move(x, y)
 
 
@@ -922,7 +1020,7 @@ class PhraseRotator:
 
 class GettingStartedDialog(QDialog):
     """A closable reminder of the first steps, shown on launch until the user opts out."""
-    STEPS = ["Connect your API with the gear icon",
+    STEPS = ["Connect your API: click the status at the top right",
              "Start a New Scan, or open Scan History",
              "Review findings, then Fix, Accept or Ignore"]
 
@@ -977,38 +1075,39 @@ class ApiSettingsDialog(QDialog):
         layout.addLayout(footer)
 
 
-class ScanProgressDialog(BottomPopup):
-    """Popup shown while a scan runs: a radar sweep, the current phrase, and a Cancel button."""
+class ScanProgressDialog(FloatingCard):
+    """The scanning screen: a large radar sweep and the current phrase, centred, with a Cancel button."""
+    CENTERED = True
     cancelled = pyqtSignal()
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowModality(Qt.WindowModal)
-        self.setFixedWidth(580)
+        self.setFixedWidth(520)
         self._quiet = False
         self.phase_index = 0
 
-        self.spinner = RadarSpinner()
+        self.spinner = RadarSpinner(size=170)
         self.phrase_label = QLabel()
         self.phrase_label.setObjectName("phrase")
+        self.phrase_label.setAlignment(Qt.AlignCenter)
         self.phrase_label.setWordWrap(True)
+        self.phrase_label.setMinimumHeight(60)
         note = QLabel("Sample data replay")
         note.setObjectName("muted")
+        note.setAlignment(Qt.AlignCenter)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
 
-        text = QVBoxLayout()
-        text.setSpacing(4)
-        text.addStretch()
-        text.addWidget(self.phrase_label)
-        text.addWidget(note)
-        text.addStretch()
-        row = QHBoxLayout(self.card)
-        row.setContentsMargins(22, 18, 22, 18)
-        row.setSpacing(20)
-        row.addWidget(self.spinner)
-        row.addLayout(text, 1)
-        row.addWidget(self.cancel_btn, 0, Qt.AlignVCenter)
+        layout = QVBoxLayout(self.card)
+        layout.setContentsMargins(32, 32, 32, 28)
+        layout.setSpacing(10)
+        layout.addWidget(self.spinner, 0, Qt.AlignHCenter)
+        layout.addSpacing(6)
+        layout.addWidget(self.phrase_label)
+        layout.addWidget(note)
+        layout.addSpacing(10)
+        layout.addWidget(self.cancel_btn, 0, Qt.AlignHCenter)
 
     def set_phase(self, index):
         self.phase_index = index
@@ -1027,7 +1126,7 @@ class ScanProgressDialog(BottomPopup):
         super().reject()
 
 
-class ScanResultDialog(BottomPopup):
+class ScanResultDialog(FloatingCard):
     """Result card shown when a scan finishes: red, amber or green, with a count per severity.
     All its text is one size."""
     TEXT_SIZE = 18
@@ -1036,8 +1135,7 @@ class ScanResultDialog(BottomPopup):
         "other": ("#2A2410", "#6B5A1F", "#F5C451", "⚠"),
         "none": ("#0F2A1C", "#1F5A38", "#4ADE80", "✓"),
     }
-    CHIPS = {"High+": ("#2A1010", "#F87171"), "High": ("#2A1010", "#F87171"),
-             "Medium": ("#2A2410", "#F5C451")}
+    CHIPS = SEVERITY_COLORS
     DEFAULT_CHIP = ("#172A47", "#9FB3CC")
 
     def __init__(self, parent, findings):
@@ -1114,6 +1212,7 @@ class ScanPage(QWidget):
         self.phrase_timer.timeout.connect(self._rotate_phrase)
         self.phrases = PhraseRotator()
         self.progress = None  # the scanning popup while a scan runs
+        self._dim = None  # darkens the window behind it
         self.result_dialog = None
         self._phase = 0
 
@@ -1148,6 +1247,7 @@ class ScanPage(QWidget):
         self.table.setColumnWidth(1, 105)
         self.table.setColumnWidth(3, 290)
         self.table.setColumnWidth(4, 125)
+        self.table.setItemDelegate(SeverityRowDelegate(self.table))
         self.table.itemSelectionChanged.connect(self._refresh_detail)
         self.tracker = SeverityTracker()
         self.repo_chart = BurndownChart(compact=True)
@@ -1340,10 +1440,19 @@ class ScanPage(QWidget):
         self.progress.cancelled.connect(self._cancel_scan)
         self.progress.set_phase(self._phase)
         self.progress.set_phrase(self.phrases.next(self._phase))
+        window = self.window()
+        if window is not self:
+            self._dim = DimOverlay(window)
         self.progress.show()
+
+    def _remove_dim(self):
+        if self._dim is not None:
+            dim, self._dim = self._dim, None
+            dim.dismiss()
 
     def _close_progress(self):
         self.phrase_timer.stop()
+        self._remove_dim()
         if self.progress is not None:
             dialog, self.progress = self.progress, None
             dialog.finish()
@@ -1363,6 +1472,7 @@ class ScanPage(QWidget):
         """The user cancelled the scanning popup (a demo replay just stops)."""
         self.timer.stop()
         self.phrase_timer.stop()
+        self._remove_dim()
         dialog, self.progress = self.progress, None
         if dialog is not None:
             dialog.deleteLater()
@@ -1420,8 +1530,13 @@ class ScanPage(QWidget):
         self._rows = findings
         self.table.setRowCount(len(findings))
         for row, f in enumerate(findings):
+            colours = SEVERITY_COLORS.get(f.severity)
             for col, value in enumerate([f.id, f.severity, f.title, f.location, f.status]):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if colours:
+                    item.setBackground(QColor(colours[0]))
+                    item.setForeground(QColor(colours[1]))
+                self.table.setItem(row, col, item)
         self.table.resizeRowsToContents()
         if findings:
             self.table.selectRow(0)
@@ -1564,7 +1679,7 @@ class MainWindow(QMainWindow):
 
         home = QPushButton("VulnHunter")
         home.setObjectName("home")
-        home.setMinimumSize(260, 48)
+        home.setMinimumSize(300, 52)
         home.setCursor(Qt.PointingHandCursor)
         home.clicked.connect(self.show_home)
         self.home_button = home
@@ -1573,19 +1688,19 @@ class MainWindow(QMainWindow):
         self.sample_tag.setObjectName("sampleTag")
         self.sample_tag.setToolTip("Every scan and chart in this app uses invented sample data.")
         self.status_pill = StatusPill()
-        self.status_pill.setToolTip("Open the gear to connect an API key.")
-        self.gear_button = QPushButton("⚙")
-        self.gear_button.setObjectName("gear")
-        self.gear_button.setCursor(Qt.PointingHandCursor)
-        self.gear_button.setToolTip("API settings")
-        self.gear_button.clicked.connect(self.show_api_settings)
+        self.status_pill.clicked.connect(self.show_api_settings)
+        self.help_button = QPushButton("?")
+        self.help_button.setObjectName("iconButton")
+        self.help_button.setCursor(Qt.PointingHandCursor)
+        self.help_button.setToolTip("Getting started")
+        self.help_button.clicked.connect(self.show_getting_started)
         status_cluster = QWidget()
         status_layout = QHBoxLayout(status_cluster)
         status_layout.setContentsMargins(0, 0, 0, 0)
         status_layout.setSpacing(12)
         status_layout.addWidget(self.sample_tag)
         status_layout.addWidget(self.status_pill)
-        status_layout.addWidget(self.gear_button)
+        status_layout.addWidget(self.help_button)
 
         # Equal stretch on both sides keeps the home button centred.
         header_layout = QHBoxLayout(header)
@@ -1625,37 +1740,39 @@ class MainWindow(QMainWindow):
 
     def on_llm_connected(self, provider_key, provider_label):
         self.connected_provider = (provider_key, provider_label)
-        self.status_pill.set_state("ok")
-        self.status_pill.setToolTip(f"Connected to {provider_label}")
+        self.status_pill.set_state("ok", f"Connected to {provider_label}")
 
     def on_llm_disconnected(self):
         self.connected_provider = None
         self.status_pill.set_state("off")
-        self.status_pill.setToolTip("Open the gear to connect an API key.")
 
     def on_llm_connect_failed(self, message):
         self.connected_provider = None
-        self.status_pill.set_state("error")
-        self.status_pill.setToolTip(f"The key was rejected: {message}")
+        self.status_pill.set_state("error", f"The key was rejected: {message}")
 
     def _on_api_key_edited(self, text):
         # Clearing the key after a rejection goes back to the pulsing "not connected" state.
         if not text.strip() and self.status_pill.state() == "error":
             self.on_llm_disconnected()
 
-    def maybe_show_reminder(self):
-        """Show the Getting started reminder unless the user opted out. Returns the dialog or None."""
-        if reminder_hidden(self.app_settings):
-            return None
+    def show_getting_started(self):
+        """Open the Getting started popup on demand, even if the launch reminder was turned off."""
         dialog = GettingStartedDialog(self)
+        dialog.dont_show.setChecked(reminder_hidden(self.app_settings))
         dialog.finished.connect(lambda _result, d=dialog: self._on_reminder_closed(d))
         self.reminder = dialog
         dialog.show()
         return dialog
 
+    def maybe_show_reminder(self):
+        """Show the Getting started reminder on launch unless the user opted out. Returns the dialog or None."""
+        if reminder_hidden(self.app_settings):
+            return None
+        return self.show_getting_started()
+
     def _on_reminder_closed(self, dialog):
-        if dialog.dont_show.isChecked():
-            set_reminder_hidden(self.app_settings, True)
+        # Ticking the box turns the launch reminder off; unticking it (via the ? button) turns it back on.
+        set_reminder_hidden(self.app_settings, dialog.dont_show.isChecked())
 
     def show_history(self):
         self._navigate_to(self.HISTORY)

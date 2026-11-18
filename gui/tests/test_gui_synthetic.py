@@ -382,7 +382,7 @@ def test_main_window_zoom_shortcuts_scale_contents_not_window(qapp):
     assert f"font-size: {round(18 * window._zoom)}px;" in window.styleSheet().split("QMainWindow")[0]
     qapp.processEvents()
     home_button = window.home_button
-    assert "QPushButton#home { font-size: 20px; }" in window.styleSheet()
+    assert f"QPushButton#home {{ font-size: {gui.HOME_BUTTON_PX}px; }}" in window.styleSheet()
     assert home_button.width() >= 260
     assert home_button.width() > home_button.fontMetrics().horizontalAdvance(home_button.text())
     assert home_button.height() >= 48
@@ -639,11 +639,12 @@ def test_split_location_and_code_url():
 
 # UI cleanup: header, status pill, gear popup, reminder
 
-def test_header_has_sample_tag_status_pill_and_gear(qapp):
+def test_header_has_sample_tag_status_pill_and_help_but_no_gear(qapp):
     window = MainWindow()
     assert window.sample_tag.text() == "Sample data"
     assert window.status_pill.state() == "off"
-    assert window.gear_button.toolTip() == "API settings"
+    assert window.help_button.toolTip() == "Getting started"
+    assert not hasattr(window, "gear_button")
     assert window.stack.count() == 4  # the API connector is a popup, not a page
 
 
@@ -689,12 +690,49 @@ def test_failed_connect_emits_connect_failed(qapp):
     assert failures == ["bad key"]
 
 
-def test_gear_opens_the_api_settings_popup(qapp):
+def test_clicking_the_status_pill_opens_the_api_settings(qapp):
     window = MainWindow()
-    window.gear_button.click()
+    window.status_pill.clicked.emit()
     assert window.settings_dialog.isVisible()
     assert window.settings_dialog.isAncestorOf(window.connector_page)
     window.settings_dialog.close()
+
+
+def test_status_pill_is_a_clickable_label_with_hover_hints(qapp):
+    window = MainWindow()
+    pill = window.status_pill
+    assert pill.cursor().shape() == Qt.PointingHandCursor
+    assert pill.toolTip() == "Click to enter your API key"
+
+    window.connector_page.connected.emit("deepseek", "DeepSeek")
+    assert pill.toolTip() == "Connected to DeepSeek. Click to configure API key"
+    window.connector_page.connect_failed.emit("401")
+    assert pill.toolTip() == "The key was rejected: 401. Click to configure API key"
+    window.connector_page.disconnected.emit()
+    assert pill.toolTip() == "Click to enter your API key"
+
+
+def test_real_mouse_click_on_the_pill_emits_clicked(qapp):
+    from PyQt5.QtTest import QTest
+    pill = gui.StatusPill()
+    pill.resize(220, 36)
+    pill.show()
+    got = []
+    pill.clicked.connect(lambda: got.append(1))
+    QTest.mouseClick(pill, Qt.LeftButton)
+    assert got == [1]
+    QTest.mouseClick(pill, Qt.RightButton)  # only the left button counts
+    assert got == [1]
+    pill.close()
+
+
+def test_pill_marks_hover_for_styling(qapp):
+    from PyQt5.QtCore import QEvent
+    pill = gui.StatusPill()
+    pill.event(QEvent(QEvent.Enter))
+    assert pill.property("hover") is True
+    pill.event(QEvent(QEvent.Leave))
+    assert pill.property("hover") is False
 
 
 def test_getting_started_reminder_respects_dont_show_again(qapp, tmp_path):
@@ -996,7 +1034,7 @@ def test_scanning_popup_has_no_title_and_no_sliding_bar(qapp):
     page.reset()
 
 
-def test_popups_sit_at_the_bottom_centre_of_the_window(qapp):
+def test_scanning_screen_is_centred_and_the_result_card_sits_at_the_bottom(qapp):
     window = MainWindow()
     window.resize(1360, 900)
     window.show()
@@ -1009,17 +1047,32 @@ def test_popups_sit_at_the_bottom_centre_of_the_window(qapp):
     win = window.geometry()
 
     box = page.progress.frameGeometry()
-    assert abs(box.center().x() - win.center().x()) <= 2
-    assert box.top() > win.center().y()
-    assert box.bottom() <= win.bottom()
+    assert abs(box.center().x() - win.center().x()) <= 3
+    assert abs(box.center().y() - win.center().y()) <= 3
+    assert page.progress.width() >= 520 and page.progress.spinner.width() >= 160
+    assert page._dim is not None and page._dim.geometry() == window.rect()
 
     for _ in range(len(page._run_output) + 1):
         page._next_line()
     qapp.processEvents()
+    assert page._dim is None  # the window is usable again
     card = page.result_dialog
     box = card.frameGeometry()
+    assert abs(box.center().x() - win.center().x()) <= 3
     assert box.top() > win.center().y() and box.bottom() <= win.bottom()
     assert card.windowModality() == Qt.NonModal  # the findings stay clickable
+    window.close()
+
+
+def test_cancelling_removes_the_dim_overlay(qapp):
+    window = MainWindow()
+    window.show()
+    window.new_scan()
+    page = window.scan_page
+    page.start_scan()
+    assert page._dim is not None
+    page.progress.cancel_btn.click()
+    assert page._dim is None
     window.close()
 
 
@@ -1055,3 +1108,104 @@ def test_equal_rows_get_equal_heights_once_the_page_is_shown(qapp):
     # The first two seeded scans have the same repository name, so they should be the same height.
     assert table.rowHeight(0) == table.rowHeight(1)
     window.close()
+
+
+# Severity colours, logo button, help button
+
+def test_rows_are_coloured_by_severity_across_every_cell(qapp):
+    from PyQt5.QtGui import QColor
+    page = ScanPage([], [])
+    findings = [Finding(f"V-{i}", tier, "title", "a.py:1", "Open")
+                for i, tier in enumerate(["Low", "High+", "Informational", "High", "Medium"])]
+    page._fill_table(findings)
+    assert table_column(page, 1) == ["High+", "High", "Medium", "Low", "Informational"]
+    for row, tier in enumerate(table_column(page, 1)):
+        background, text = gui.SEVERITY_COLORS[tier]
+        for col in range(page.table.columnCount()):
+            item = page.table.item(row, col)
+            assert item.background().color() == QColor(background)
+            assert item.foreground().color() == QColor(text)
+
+
+def test_severity_colour_scheme_matches_the_request(qapp):
+    colours = gui.SEVERITY_COLORS
+    assert list(colours) == ["High+", "High", "Medium", "Low", "Informational"]
+    assert len({bg for bg, _ in colours.values()}) == 5  # every tier is distinct
+    for tier, (background, text) in colours.items():
+        assert background.startswith("#") and text.startswith("#")
+    # dark red, red, orange, yellow: the red channel leads for the first two, green rises for the next
+    from PyQt5.QtGui import QColor
+    hp, h = QColor(colours["High+"][1]), QColor(colours["High"][1])
+    m, low = QColor(colours["Medium"][1]), QColor(colours["Low"][1])
+    assert hp.red() > hp.green() and h.red() > h.green()
+    assert m.green() > h.green() and low.green() > m.green()
+
+
+def test_unknown_severity_row_keeps_the_default_look(qapp):
+    page = ScanPage([], [])
+    page._fill_table([Finding("V-1", "Critical", "t", "a.py:1", "Open")])
+    assert page.table.item(0, 1).background().style() == Qt.NoBrush
+
+
+def test_selected_row_keeps_its_colour_and_paints_with_the_delegate(qapp):
+    from PyQt5.QtGui import QColor
+    page = ScanPage([], [])
+    assert isinstance(page.table.itemDelegate(), gui.SeverityRowDelegate)
+    page._fill_table([Finding("V-1", "High", "t", "a.py:1", "Open"),
+                      Finding("V-2", "Low", "t", "a.py:2", "Open")])
+    page.table.selectRow(0)
+    assert page.table.item(0, 0).background().color() == QColor(gui.SEVERITY_COLORS["High"][0])
+    page.table.resize(900, 300)
+    assert not page.table.grab().isNull()
+
+
+def test_status_change_keeps_the_row_colour(qapp, monkeypatch):
+    from PyQt5.QtGui import QColor
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    page = scan_with_findings(qapp)
+    finding = select_finding(page, "VULN-005")
+    page.fix_btn.click()
+    row = page._rows.index(finding)
+    assert page.table.item(row, 4).text() == "Fix proposed"
+    assert page.table.item(row, 4).background().color() == QColor(gui.SEVERITY_COLORS["High"][0])
+
+
+def test_tracker_counts_use_the_tier_colours(qapp):
+    tracker = gui.SeverityTracker()
+    for tier, label in tracker.counts.items():
+        assert gui.SEVERITY_COLORS[tier][1].lower() in label.styleSheet().lower()
+
+
+def test_result_card_chips_use_the_tier_colours(qapp):
+    card = gui.ScanResultDialog(None, SAMPLE_FINDINGS)
+    high_bg, high_fg = gui.SEVERITY_COLORS["High"]
+    low_bg, low_fg = gui.SEVERITY_COLORS["Low"]
+    assert high_bg in card.chips[0].styleSheet() and high_fg in card.chips[0].styleSheet()
+    assert low_bg in card.chips[1].styleSheet() and low_fg in card.chips[1].styleSheet()
+
+
+def test_logo_button_text_is_larger(qapp):
+    assert gui.HOME_BUTTON_PX == 28
+    block = gui.STYLE.split("QPushButton#home {")[1].split("}")[0]
+    assert f"font-size: {gui.HOME_BUTTON_PX}px" in block
+    window = MainWindow()
+    assert window.home_button.minimumHeight() >= 52
+
+
+def test_help_button_reopens_getting_started_even_when_it_was_turned_off(qapp, tmp_path):
+    from PyQt5.QtCore import QSettings
+    settings = QSettings(str(tmp_path / "vulngui.ini"), QSettings.IniFormat)
+    gui.set_reminder_hidden(settings, True)
+    window = MainWindow(settings=settings)
+    assert window.maybe_show_reminder() is None  # the launch reminder stays off
+
+    window.help_button.click()
+    dialog = window.reminder
+    assert dialog is not None and dialog.isVisible()
+    assert dialog.dont_show.isChecked()  # shows the saved choice
+
+    dialog.dont_show.setChecked(False)  # turn the launch reminder back on
+    dialog.close_btn.click()
+    assert not gui.reminder_hidden(settings)
+    assert window.maybe_show_reminder() is not None
+    window.reminder.close()
