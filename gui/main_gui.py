@@ -32,11 +32,11 @@ from PyQt5.QtWidgets import (
 )
 
 from gui.data.mock_data import (
-    ACCEPT_REASONS, ALL_REPOS, BURNDOWN_BY_REPO, DISABLED_MODELS, HUNT_PHASE, IGNORE_REASONS,
+    ACCEPT_REASONS, ALL_REPOS, BURNDOWN_BY_REPO, DISABLED_MODELS, HUNT_PHASE, DISPUTE_REASONS,
     MODEL_IDS, REPO_URL, SAMPLE_FINDINGS, SAMPLE_OUTPUT, SCAN_PHASES, SCAN_PHRASES, SEED_HISTORY,
     SEVERITY_ORDER, ScanRecord, burndown_series, burndown_totals, code_url, phase_of_line,
-    burndown_repo_key, cwe_name, cwe_url, open_by_severity, result_level, sample_fix, sample_repo_findings,
-    sample_snippet, severity_summary, split_location,
+    burndown_repo_key, cwe_name, cwe_url, latest_scan_indexes, open_by_severity, result_level, sample_fix,
+    sample_repo_findings, sample_snippet, severity_summary, split_location, status_group, STATUS_GROUPS,
 )
 from llm_connector.conn_all_llm import LLMConnector
 from gui.api_conn_page import ApiConnectorPage
@@ -225,6 +225,10 @@ class Breadcrumb(QWidget):
         row.addStretch()
         self.set_current(current)
 
+    def set_back_text(self, back_text):
+        self.back_btn.setText(f"← {back_text}")
+        self.back_btn.setToolTip(f"Back to {back_text}")
+
     def set_current(self, text):
         self.current.setText(text)
         self.separator.setVisible(bool(text))
@@ -396,7 +400,7 @@ class GettingStartedBanner(QFrame):
     closed = pyqtSignal(bool)  # True when "Don't show this again" was ticked
     STEPS = ["Click the status pill to add your API key",
              "Start a New Scan, or open Scan History",
-             "Review findings, then Fix, Accept or Ignore"]
+             "Review findings, then Fix, Accept or Dispute"]
 
     def __init__(self):
         super().__init__()
@@ -444,6 +448,7 @@ class HomePage(QWidget):
     history_requested = pyqtSignal()
     reports_requested = pyqtSignal()
     new_scan_requested = pyqtSignal()
+    findings_requested = pyqtSignal()
     getting_started_closed = pyqtSignal(bool)
 
     def __init__(self):
@@ -472,6 +477,7 @@ class HomePage(QWidget):
         cards.setSpacing(20)
         cards.addStretch(1)
         for icon, title, desc, signal in [
+            ("☰", "Findings", "Every finding across your repos, by status.", self.findings_requested),
             ("▦", "Scan History", "Past scans and their findings.", self.history_requested),
             ("◔", "Reports", "Burndown, severity and provider comparison.", self.reports_requested),
         ]:
@@ -949,8 +955,156 @@ class HistoryPage(QWidget):
         return (0, value.casefold())
 
 
+class FindingsPage(QWidget):
+    """A findings board: every finding from the latest scan of each repo, filtered by status."""
+    back_requested = pyqtSignal()
+    finding_selected = pyqtSignal(int, str)  # index of the scan in the history, finding id
+    ALL_SEVERITIES = "All severities"
+    ALL_STATUSES = "All statuses"
+
+    def __init__(self):
+        super().__init__()
+        self._entries = []  # (history index, repo, finding)
+        self._shown = []
+        self.breadcrumb = Breadcrumb("Home", "Findings")
+        self.breadcrumb.back_clicked.connect(self.back_requested)
+        title = QLabel("Findings")
+        title.setObjectName("statsTitle")
+
+        strip = QHBoxLayout()
+        strip.setSpacing(12)
+        self.group_values = {}
+        for group in STATUS_GROUPS:
+            card = ClickableCard()
+            card.setToolTip(f"Show only {group.lower()} findings")
+            card.clicked.connect(lambda g=group: self.status_filter.setCurrentText(g))
+            box = QVBoxLayout(card)
+            value = QLabel("0")
+            value.setObjectName("cardValue")
+            box.addWidget(value)
+            box.addWidget(QLabel(group))
+            self.group_values[group] = value
+            strip.addWidget(card)
+
+        self.repo_filter = QComboBox()
+        self.repo_filter.addItem(ALL_REPOS)
+        self.severity_filter = QComboBox()
+        self.severity_filter.addItem(self.ALL_SEVERITIES)
+        self.severity_filter.addItems(SEVERITY_ORDER)
+        self.status_filter = QComboBox()
+        self.status_filter.addItem(self.ALL_STATUSES)
+        self.status_filter.addItems(list(STATUS_GROUPS))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search findings")
+        self.reset_btn = QPushButton("Reset to default")
+        self.reset_btn.setObjectName("link")
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.clicked.connect(self.reset_filters)
+        for box in (self.repo_filter, self.severity_filter, self.status_filter):
+            box.currentIndexChanged.connect(self._render)
+        self.search.textChanged.connect(self._render)
+        filters = QHBoxLayout()
+        filters.setSpacing(10)
+        for box in (self.repo_filter, self.severity_filter, self.status_filter):
+            filters.addWidget(box)
+        filters.addWidget(self.search, 1)
+        filters.addWidget(self.reset_btn)
+
+        self.table = make_table(["ID", "Severity", "Finding", "Repository", "Status"])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.setColumnWidth(0, 115)
+        self.table.setColumnWidth(1, 105)
+        self.table.setColumnWidth(3, 250)
+        self.table.setColumnWidth(4, 130)
+        self.table.setItemDelegate(SeverityRowDelegate(self.table))
+        self.table.cellClicked.connect(self._choose)
+        self.empty = QLabel("No findings match these filters.")
+        self.empty.setObjectName("muted")
+        self.empty.setAlignment(Qt.AlignCenter)
+        note = QLabel("Sample data. Click a finding to open it in its scan.")
+        note.setObjectName("muted")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(12)
+        layout.addWidget(self.breadcrumb)
+        layout.addWidget(title)
+        layout.addLayout(strip)
+        layout.addLayout(filters)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(self.empty)
+        layout.addWidget(note)
+
+    def refresh(self, history):
+        """Rebuild from the scan history (newest first): the latest scan of each repo counts."""
+        self._entries = [(index, history[index].repo, finding)
+                         for index in latest_scan_indexes(history).values()
+                         for finding in history[index].findings]
+        current = self.repo_filter.currentText()
+        self.repo_filter.blockSignals(True)
+        self.repo_filter.clear()
+        self.repo_filter.addItem(ALL_REPOS)
+        self.repo_filter.addItems(list(latest_scan_indexes(history)))  # every repo, even with no findings
+        index = self.repo_filter.findText(current)
+        self.repo_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.repo_filter.blockSignals(False)
+        self._render()
+
+    def reset_filters(self):
+        for box in (self.repo_filter, self.severity_filter, self.status_filter):
+            box.setCurrentIndex(0)
+        self.search.clear()
+
+    def _render(self, *_args):
+        repo = self.repo_filter.currentText()
+        severity = self.severity_filter.currentText()
+        status = self.status_filter.currentText()
+        text = self.search.text().strip().casefold()
+        matching = []
+        for entry in self._entries:
+            _index, repo_name, f = entry
+            if repo != ALL_REPOS and repo_name != repo:
+                continue
+            if severity != self.ALL_SEVERITIES and f.severity != severity:
+                continue
+            if text and text not in " ".join((f.id, f.title, f.location, f.cwe, repo_name)).casefold():
+                continue
+            matching.append(entry)
+        for group, label in self.group_values.items():  # the counts ignore the status filter itself
+            label.setText(str(sum(status_group(e[2].status) == group for e in matching)))
+        shown = [e for e in matching if status == self.ALL_STATUSES or status_group(e[2].status) == status]
+        rank = {tier: i for i, tier in enumerate(SEVERITY_ORDER)}
+        shown.sort(key=lambda e: (rank.get(e[2].severity, len(rank)), e[1], e[2].id))
+        self._shown = shown
+
+        self.table.setRowCount(len(shown))
+        for row, (_index, repo_name, f) in enumerate(shown):
+            colours = SEVERITY_COLORS.get(f.severity)
+            for col, value in enumerate([f.id, f.severity, f.title, repo_name, f.status]):
+                item = QTableWidgetItem(value)
+                if colours:
+                    item.setBackground(QColor(colours[0]))
+                    item.setForeground(QColor(colours[1]))
+                self.table.setItem(row, col, item)
+        self.table.resizeRowsToContents()
+        self.empty.setVisible(not shown)
+
+    def _choose(self, row, _column):
+        if 0 <= row < len(self._shown):
+            index, _repo, finding = self._shown[row]
+            self.finding_selected.emit(index, finding.id)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.table.resizeRowsToContents()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.table.resizeRowsToContents()
+
+
 def apply_decision(finding, decision, reason, note):
-    """Record a reviewer's Accept/Ignore decision on a finding. Mocked: nothing leaves the app."""
+    """Record a reviewer's Accept/Dispute decision on a finding. Mocked: nothing leaves the app."""
     finding.decision = decision
     finding.reason = reason
     finding.note = note.strip()
@@ -1490,7 +1644,7 @@ class ScanPage(QWidget):
         self._refresh_detail()
 
     def _build_detail_panel(self):
-        """The clicked finding: details and actions. Fix, Accept, Ignore, Verify and Report are
+        """The clicked finding: details and actions. Fix, Accept, Dispute, Verify and Report are
         mocked: they work on sample data only and never touch a repository."""
         panel = QFrame()
         panel.setObjectName("card")
@@ -1545,26 +1699,27 @@ class ScanPage(QWidget):
         self.fix_btn = QPushButton("Fix")
         self.fix_btn.setObjectName("primary")
         self.accept_btn = QPushButton("Accept")
-        self.ignore_btn = QPushButton("Ignore")
+        self.dispute_btn = QPushButton("Dispute")
         self.verify_btn = QPushButton("Verify")
         self.report_btn = QPushButton("Report")
         self.fix_btn.setToolTip("Fix: propose a remediation for this finding (mocked, shows a sample proposal).")
         self.accept_btn.setToolTip("Accept the proposed fix, with a reason and context (mocked).")
-        self.ignore_btn.setToolTip("Ignore this finding or fix, with a reason and context (mocked).")
+        self.dispute_btn.setToolTip("Dispute this finding (false positive, handled elsewhere, or the fix would "
+                                    "break something), with a reason and context (mocked).")
         self.verify_btn.setToolTip("Verify: check that this finding is actually fixed (not implemented yet).")
         self.report_btn.setToolTip("Report: export this finding (not implemented yet).")
         self.fix_btn.clicked.connect(self._propose_fix)
         self.accept_btn.clicked.connect(lambda: self._decide("Accept"))
-        self.ignore_btn.clicked.connect(lambda: self._decide("Ignore"))
+        self.dispute_btn.clicked.connect(lambda: self._decide("Dispute"))
         for btn in (self.verify_btn, self.report_btn):
             btn.clicked.connect(lambda _checked, b=btn: self._not_implemented(b.text()))
         # A widget's own stylesheet beats inherited ones, so size each button here.
-        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn,
+        for btn in (self.fix_btn, self.accept_btn, self.dispute_btn, self.verify_btn, self.report_btn,
                     self.editor_btn, self.copy_btn):
             btn.setStyleSheet("padding: 8px 14px;")
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        for btn in (self.fix_btn, self.accept_btn, self.ignore_btn):
+        for btn in (self.fix_btn, self.accept_btn, self.dispute_btn):
             actions.addWidget(btn)
         actions.addStretch()
         more = QHBoxLayout()
@@ -1573,7 +1728,7 @@ class ScanPage(QWidget):
         more.addWidget(self.report_btn)
         more.addStretch()
 
-        # Inline form for Accept and Ignore
+        # Inline form for Accept and Dispute
         self.decision_form = QFrame()
         self.decision_form.hide()
         self.decision_title = QLabel()
@@ -1671,6 +1826,16 @@ class ScanPage(QWidget):
             self.repo_chart_requested.emit(burndown_repo_key(self._chart_repo))
 
     # Finding panel: opens in the right column when a row is clicked (not when a scan selects row 0)
+    def select_finding(self, finding_id):
+        """Select a finding by id and open its panel (used when it is chosen on the findings board)."""
+        for row, finding in enumerate(self._rows):
+            if finding.id == finding_id:
+                self.table.selectRow(row)
+                self.table.scrollToItem(self.table.item(row, 0))
+                self._open_detail()
+                return True
+        return False
+
     def _on_row_clicked(self, _row, _column):
         if self._current_finding() is not None:  # the click has selected the row
             self._open_detail()
@@ -1842,7 +2007,7 @@ class ScanPage(QWidget):
     def _refresh_detail(self):
         """Show the selected finding's details and enable its actions."""
         finding = self._current_finding()
-        buttons = (self.fix_btn, self.accept_btn, self.ignore_btn, self.verify_btn, self.report_btn,
+        buttons = (self.fix_btn, self.accept_btn, self.dispute_btn, self.verify_btn, self.report_btn,
                    self.copy_btn)
         for btn in buttons:
             btn.setEnabled(finding is not None)
@@ -1944,14 +2109,14 @@ class ScanPage(QWidget):
         self._form_finding = finding
         self.decision_title.setText(f"{kind}: {finding.id}")
         self.decision_reason.clear()
-        self.decision_reason.addItems(ACCEPT_REASONS if kind == "Accept" else IGNORE_REASONS)
+        self.decision_reason.addItems(ACCEPT_REASONS if kind == "Accept" else DISPUTE_REASONS)
         self.decision_note.clear()
         self.decision_form.show()
 
     def _save_decision(self):
         finding = self._form_finding
         if finding is not None:
-            decision = "Accepted" if self._decision_kind == "Accept" else "Ignored"
+            decision = "Accepted" if self._decision_kind == "Accept" else "Disputed"
             apply_decision(finding, decision, self.decision_reason.currentText(),
                            self.decision_note.toPlainText())
             self._refresh_status()
@@ -1967,7 +2132,7 @@ class ScanPage(QWidget):
 
 
 class MainWindow(QMainWindow):
-    HOME, HISTORY, SCAN, REPORTS = 0, 1, 2, 3
+    HOME, HISTORY, SCAN, REPORTS, FINDINGS = 0, 1, 2, 3, 4
     MIN_ZOOM = 0.7
     MAX_ZOOM = 2.0
     DEFAULT_ZOOM = 1.0
@@ -1991,14 +2156,18 @@ class MainWindow(QMainWindow):
         self.history_page = HistoryPage()
         self.scan_page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
         self.reports_page = ReportsPage()
+        self.findings_page = FindingsPage()
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.scan_page)
         self.stack.addWidget(self.reports_page)
+        self.stack.addWidget(self.findings_page)
         self._page_history = [self.HOME]
         self._page_history_position = 0
         self.home_page.reports_requested.connect(self.show_reports)
+        self.home_page.findings_requested.connect(self.show_findings)
+        self._scan_origin = self.HISTORY
 
         # API settings live in a popup opened from the gear icon, not on a page of their own.
         self.connector_page = ApiConnectorPage()
@@ -2074,7 +2243,10 @@ class MainWindow(QMainWindow):
         self.home_page.new_scan_requested.connect(self.new_scan)
         self.history_page.new_scan.connect(self.new_scan)
         self.history_page.back_requested.connect(self.show_home)
-        self.scan_page.back_requested.connect(self.show_history)
+        self.scan_page.back_requested.connect(self._leave_scan)
+        self.findings_page.back_requested.connect(self.show_home)
+        self.findings_page.finding_selected.connect(self.open_finding)
+        self.stack.currentChanged.connect(self._on_page_changed)
         self.reports_page.back_requested.connect(self.show_home)
         self.reports_page.new_scan_requested.connect(self.new_scan)
         self.home_page.getting_started_closed.connect(self._on_getting_started_closed)
@@ -2089,6 +2261,20 @@ class MainWindow(QMainWindow):
 
     def show_reports(self):
         self._navigate_to(self.REPORTS)
+
+    def show_findings(self):
+        self._navigate_to(self.FINDINGS)
+
+    def _on_page_changed(self, index):
+        if index == self.FINDINGS:  # decisions made in a scan show up on the board
+            self.findings_page.refresh(self.history)
+
+    def _set_scan_origin(self, origin):
+        self._scan_origin = origin
+        self.scan_page.breadcrumb.set_back_text("Findings" if origin == self.FINDINGS else "Scan History")
+
+    def _leave_scan(self):
+        self._navigate_to(self._scan_origin)
 
     def show_repo_burndown(self, repo):
         """Open the Reports page on one repo's burndown (the big version of the scan page's chart)."""
@@ -2145,12 +2331,21 @@ class MainWindow(QMainWindow):
         self._navigate_to(self.HISTORY)
 
     def new_scan(self):
+        self._set_scan_origin(self.HISTORY)
         self.scan_page.reset()
         self._navigate_to(self.SCAN)
 
     def open_record(self, row):
+        self._set_scan_origin(self.HISTORY)
         self.scan_page.show_record(self.history[row])
         self._navigate_to(self.SCAN)
+
+    def open_finding(self, row, finding_id):
+        """Open the scan holding a finding chosen on the findings board, with its panel open."""
+        self.scan_page.show_record(self.history[row])
+        self._set_scan_origin(self.FINDINGS)
+        self._navigate_to(self.SCAN)
+        self.scan_page.select_finding(finding_id)
 
     def _navigate_to(self, page_index):
         if self.stack.currentIndex() == page_index:

@@ -21,7 +21,7 @@ class Finding:
     status: str
     cwe: str = ""
     issue: int = 0  # GitHub issue number in the scanned repo, 0 if none
-    decision: str = ""  # "Accepted" or "Ignored" once a reviewer has decided (mock only)
+    decision: str = ""  # "Accepted" or "Disputed" once a reviewer has decided (mock only)
     reason: str = ""
     note: str = ""
 
@@ -132,7 +132,7 @@ def scan_output(model_label):
 SCAN_TOKENS = "1.75M"
 SCAN_DURATION = "19 min"
 
-# Mocked Fix / Accept / Ignore. Nothing here touches a repository.
+# Mocked Fix / Accept / Dispute. Nothing here touches a repository.
 # Sample fix summaries by weakness type, echoing the fix strategies in SAMPLE_OUTPUT.
 SAMPLE_FIXES = {
     "CWE-78": "Pass the command and its arguments as a list instead of building a shell string, "
@@ -147,8 +147,8 @@ SAMPLE_FIXES = {
 DEFAULT_SAMPLE_FIX = "Review the flagged line and apply the recommended remediation."
 
 ACCEPT_REASONS = ["Fix looks correct", "Tests cover the change", "Low risk change", "Other"]
-IGNORE_REASONS = ["False positive", "Accepted risk", "Not reachable in production",
-                  "Duplicate", "Will not fix", "Other"]
+DISPUTE_REASONS = ["False positive", "Handled elsewhere in the stack", "Fix would break the system",
+                   "Accepted risk", "Not reachable in production", "Duplicate", "Other"]
 
 # SAMPLE CODE (invented for the demo, not from any real repository). Each entry is
 # (first line number, lines); the flagged line is the one in the finding's location.
@@ -335,8 +335,8 @@ def cwe_url(cwe):
     return f"https://cwe.mitre.org/data/definitions/{match.group(1)}.html" if match else ""
 
 
-# A finding is closed once its fix is merged or verified, or a reviewer accepted or ignored it.
-CLOSED_STATUSES = ("Merged", "Verified", "Accepted", "Ignored")
+# A finding is closed once its fix is merged or verified, or a reviewer accepted or disputed it.
+CLOSED_STATUSES = ("Merged", "Verified", "Accepted", "Disputed")
 
 
 def is_open(finding):
@@ -357,3 +357,27 @@ def sample_repo_findings(repo=ALL_REPOS):
     if repo == ALL_REPOS:
         return [f for findings in latest.values() for f in findings]
     return list(latest.get(repo, []))
+
+
+# The findings board groups the statuses a finding can have into four columns of work.
+STATUS_GROUPS = {
+    "Open": ("Open",),
+    "In progress": ("Fix proposed", "PR open"),
+    "Disputed": ("Disputed",),
+    "Done": ("Accepted", "Verified", "Merged"),
+}
+
+
+def status_group(status):
+    for group, statuses in STATUS_GROUPS.items():
+        if status in statuses:
+            return group
+    return "Open"  # an unknown status still shows up, as open work
+
+
+def latest_scan_indexes(records):
+    """{repo: index of its latest scan} for a history that is newest first."""
+    latest = {}
+    for index, record in enumerate(records):
+        latest.setdefault(record.repo, index)
+    return latest

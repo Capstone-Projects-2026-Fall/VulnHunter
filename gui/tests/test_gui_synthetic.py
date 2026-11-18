@@ -477,7 +477,7 @@ def test_home_page_widgets_use_the_sized_object_names(qapp):
     assert home.findChild(gui.QPushButton, "homeNewScan") is not None
 
 
-# Per-finding actions: Fix, Accept, Ignore, View in code (all mocked)
+# Per-finding actions: Fix, Accept, Dispute, View in code (all mocked)
 
 def scan_with_findings(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
@@ -492,8 +492,8 @@ def select_finding(page, finding_id):
 
 
 def decide(page, kind, reason_index=0, note=""):
-    """Click Accept or Ignore, fill the inline form and save it."""
-    (page.accept_btn if kind == "Accept" else page.ignore_btn).click()
+    """Click Accept or Dispute, fill the inline form and save it."""
+    (page.accept_btn if kind == "Accept" else page.dispute_btn).click()
     page.decision_reason.setCurrentIndex(reason_index)
     page.decision_note.setPlainText(note)
     page.decision_save.click()
@@ -515,7 +515,7 @@ def test_detail_panel_without_selection_disables_all_actions(qapp):
     page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
     page.reset()
     assert "No finding selected" in page.detail_heading.text()
-    buttons = (page.fix_btn, page.accept_btn, page.ignore_btn, page.verify_btn, page.report_btn)
+    buttons = (page.fix_btn, page.accept_btn, page.dispute_btn, page.verify_btn, page.report_btn)
     assert not any(b.isEnabled() for b in buttons)
     assert page.cwe_link.isHidden() and page.location_label.isHidden()
 
@@ -544,21 +544,21 @@ def test_accept_records_reason_and_context(qapp):
     assert page.decision_form.isHidden()
 
 
-def test_ignore_records_reason_and_context(qapp):
+def test_dispute_records_reason_and_context(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-006")
-    decide(page, "Ignore", reason_index=0, note="Test code only")
+    decide(page, "Dispute", reason_index=0, note="Test code only")
 
-    assert (finding.decision, finding.status) == ("Ignored", "Ignored")
-    assert finding.reason == gui.IGNORE_REASONS[0]
-    assert "Ignored: False positive" in page.decision_label.text()
+    assert (finding.decision, finding.status) == ("Disputed", "Disputed")
+    assert finding.reason == gui.DISPUTE_REASONS[0]
+    assert "Disputed: False positive" in page.decision_label.text()
 
 
 def test_cancelled_decision_changes_nothing(qapp):
     page = scan_with_findings(qapp)
     finding = select_finding(page, "VULN-005")
     before = finding.status
-    page.ignore_btn.click()
+    page.dispute_btn.click()
     assert not page.decision_form.isHidden()
     page.decision_note.setPlainText("should not be saved")
     page.decision_cancel.click()
@@ -587,12 +587,12 @@ def test_decision_is_kept_when_a_past_scan_is_reopened(qapp):
     window = MainWindow(QSettings())
     run_demo_scan(window.scan_page)
     select_finding(window.scan_page, "VULN-005")
-    decide(window.scan_page, "Ignore", note="kept")
+    decide(window.scan_page, "Dispute", note="kept")
 
     window.open_record(1)  # some other scan
     window.open_record(0)  # back to the one just decided on
     finding = select_finding(window.scan_page, "VULN-005")
-    assert finding.decision == "Ignored" and finding.note == "kept"
+    assert finding.decision == "Disputed" and finding.note == "kept"
 
 
 def test_decision_form_lists_the_right_reasons(qapp):
@@ -601,9 +601,9 @@ def test_decision_form_lists_the_right_reasons(qapp):
     page.accept_btn.click()
     assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.ACCEPT_REASONS
     assert page.decision_title.text() == "Accept: VULN-005"
-    page.ignore_btn.click()
-    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.IGNORE_REASONS
-    assert page.decision_title.text() == "Ignore: VULN-005"
+    page.dispute_btn.click()
+    assert [page.decision_reason.itemText(i) for i in range(page.decision_reason.count())] == gui.DISPUTE_REASONS
+    assert page.decision_title.text() == "Dispute: VULN-005"
 
 
 def test_code_view_shows_a_sample_snippet_with_the_flagged_line(qapp):
@@ -682,7 +682,7 @@ def test_header_has_sample_tag_status_pill_and_help_but_no_gear(qapp):
     assert window.status_pill.state() == "off"
     assert window.help_button.toolTip() == "Getting started"
     assert not hasattr(window, "gear_button")
-    assert window.stack.count() == 4  # the API connector is a popup, not a page
+    assert window.stack.count() == 5  # home, history, scan, reports, findings; the API settings are a popover
 
 
 def test_status_pill_pulses_only_while_not_connected(qapp):
@@ -841,7 +841,7 @@ def test_home_page_greeting_and_new_scan_above_the_cards(qapp):
     heading = home.findChild(gui.QLabel, "homeHeading")
     assert heading.text() == "Welcome back, dev"
     cards = home.findChildren(gui.ModuleCard)
-    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Scan History", "Reports"]
+    assert [c.findChild(gui.QLabel, "cardTitle").text() for c in cards] == ["Findings", "Scan History", "Reports"]
 
     home.resize(1200, 800)
     home.show()
@@ -861,13 +861,14 @@ def test_home_buttons_emit_their_signals(qapp):
     home = gui.HomePage()
     got = []
     home.new_scan_requested.connect(lambda: got.append("new"))
+    home.findings_requested.connect(lambda: got.append("findings"))
     home.history_requested.connect(lambda: got.append("history"))
     home.reports_requested.connect(lambda: got.append("reports"))
     home.new_scan_btn.click()
     cards = home.findChildren(gui.ModuleCard)
-    cards[0].click()
-    cards[1].click()
-    assert got == ["new", "history", "reports"]
+    for card in cards:
+        card.click()
+    assert got == ["new", "findings", "history", "reports"]
 
 
 # Scan History
@@ -1515,3 +1516,105 @@ def test_burndown_repo_key_falls_back_to_the_sample_repo():
     from gui.data.mock_data import burndown_repo_key
     assert burndown_repo_key("sample-org/payments-api") == "sample-org/payments-api"
     assert burndown_repo_key("github.com/anything") == "sample-org/sample-backend"
+
+
+# Findings board and Dispute
+
+def test_dispute_replaces_ignore_everywhere(qapp):
+    page = ScanPage(SAMPLE_FINDINGS, SAMPLE_OUTPUT)
+    assert page.dispute_btn.text() == "Dispute" and not hasattr(page, "ignore_btn")
+    assert "Handled elsewhere in the stack" in gui.DISPUTE_REASONS
+    assert "Fix would break the system" in gui.DISPUTE_REASONS
+    assert not hasattr(gui, "IGNORE_REASONS")
+    assert "Dispute" in gui.GettingStartedBanner.STEPS[2]
+
+
+def test_status_groups_cover_every_sample_status():
+    from gui.data.mock_data import STATUS_GROUPS, status_group
+    assert [status_group(s) for s in ("Open", "Fix proposed", "PR open", "Disputed", "Accepted", "Verified", "Merged")] == [
+        "Open", "In progress", "In progress", "Disputed", "Done", "Done", "Done"]
+    assert status_group("something new") == "Open"
+    assert list(STATUS_GROUPS) == ["Open", "In progress", "Disputed", "Done"]
+
+
+def test_board_lists_the_latest_scan_of_each_repo(qapp):
+    from gui.data.mock_data import latest_scan_indexes
+    window = MainWindow(QSettings())
+    page = window.findings_page
+    page.refresh(window.history)
+    latest = latest_scan_indexes(window.history)
+    expected = sum(len(window.history[i].findings) for i in latest.values())
+    assert page.table.rowCount() == expected == 8
+    assert page.repo_filter.count() == 1 + len(latest)
+    assert sum(int(v.text()) for v in page.group_values.values()) == expected
+    # worst severity first
+    severities = [page.table.item(r, 1).text() for r in range(page.table.rowCount())]
+    assert severities == sorted(severities, key=gui.SEVERITY_ORDER.index)
+
+
+def test_board_filters_and_cards_narrow_the_list(qapp):
+    window = MainWindow(QSettings())
+    page = window.findings_page
+    page.refresh(window.history)
+    total = page.table.rowCount()
+
+    page.severity_filter.setCurrentText("Low")
+    assert 0 < page.table.rowCount() < total
+    assert all(page.table.item(r, 1).text() == "Low" for r in range(page.table.rowCount()))
+    page.reset_btn.click()
+    assert page.table.rowCount() == total and page.search.text() == ""
+
+    page.repo_filter.setCurrentText("sample-org/payments-api")
+    assert {page.table.item(r, 3).text() for r in range(page.table.rowCount())} == {"sample-org/payments-api"}
+    page.reset_filters()
+
+    card = page.findChildren(gui.ClickableCard)[0]
+    card.clicked.emit()
+    assert page.status_filter.currentText() == "Open"
+    assert all(gui.status_group(f.status) == "Open" for _i, _r, f in page._shown)
+    page.search.setText("no such finding anywhere")
+    assert page.table.rowCount() == 0 and not page.empty.isHidden()
+    page.reset_filters()
+    assert page.empty.isHidden()
+
+
+def test_choosing_a_finding_opens_its_scan_with_the_panel_open(qapp):
+    window = MainWindow(QSettings())
+    window.show_findings()
+    page = window.findings_page
+    assert window.stack.currentIndex() == window.FINDINGS
+    row = next(r for r, (_i, _repo, f) in enumerate(page._shown) if f.id == "VULN-005")
+    page._choose(row, 0)
+
+    assert window.stack.currentIndex() == window.SCAN
+    assert window.scan_page._current_finding().id == "VULN-005"
+    assert window.scan_page.side.currentIndex() == 1
+    assert window.scan_page.breadcrumb.back_btn.text() == "← Findings"
+    window.scan_page.breadcrumb.back_btn.click()
+    assert window.stack.currentIndex() == window.FINDINGS
+    window.open_record(0)
+    assert window.scan_page.breadcrumb.back_btn.text() == "← Scan History"
+
+
+def test_a_dispute_shows_up_on_the_board(qapp):
+    window = MainWindow(QSettings())
+    window.show_findings()
+    window.findings_page._choose(0, 0)
+    page = window.scan_page
+    finding = page._current_finding()
+    decide(page, "Dispute", reason_index=2, note="Would break the cluster")
+    assert (finding.status, finding.reason) == ("Disputed", "Fix would break the system")
+
+    window.show_findings()
+    board = window.findings_page
+    assert int(board.group_values["Disputed"].text()) == 1
+    board.status_filter.setCurrentText("Disputed")
+    assert board.table.rowCount() == 1 and board.table.item(0, 4).text() == "Disputed"
+
+
+def test_home_findings_card_opens_the_board(qapp):
+    window = MainWindow(QSettings())
+    window.home_page.findings_requested.emit()
+    assert window.stack.currentIndex() == window.FINDINGS
+    window.findings_page.breadcrumb.back_btn.click()
+    assert window.stack.currentIndex() == window.HOME
