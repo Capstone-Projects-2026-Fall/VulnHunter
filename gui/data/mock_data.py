@@ -5,6 +5,7 @@ severity mix, phase order and agent counts. Repository, file and field names are
 generic placeholders. Statuses beyond Open/Verified, the extra history
 rows and the log line wording are synthetic, so the table shows every status.
 """
+import re
 from dataclasses import dataclass
 
 REPO_URL = "https://github.com/sample-org/sample-backend"
@@ -20,7 +21,7 @@ class Finding:
     status: str
     cwe: str = ""
     issue: int = 0  # GitHub issue number in the scanned repo, 0 if none
-    decision: str = ""  # "Accepted" or "Ignored" once a reviewer has decided (mock only)
+    decision: str = ""  # "Disputed" once a reviewer has decided (mock only)
     reason: str = ""
     note: str = ""
 
@@ -131,7 +132,7 @@ def scan_output(model_label):
 SCAN_TOKENS = "1.75M"
 SCAN_DURATION = "19 min"
 
-# Mocked Fix / Accept / Ignore. Nothing here touches a repository.
+# Mocked Accept fix / Dispute / Verify. Nothing here touches a repository.
 # Sample fix summaries by weakness type, echoing the fix strategies in SAMPLE_OUTPUT.
 SAMPLE_FIXES = {
     "CWE-78": "Pass the command and its arguments as a list instead of building a shell string, "
@@ -145,9 +146,8 @@ SAMPLE_FIXES = {
 }
 DEFAULT_SAMPLE_FIX = "Review the flagged line and apply the recommended remediation."
 
-ACCEPT_REASONS = ["Fix looks correct", "Tests cover the change", "Low risk change", "Other"]
-IGNORE_REASONS = ["False positive", "Accepted risk", "Not reachable in production",
-                  "Duplicate", "Will not fix", "Other"]
+DISPUTE_REASONS = ["False positive", "Handled elsewhere in the stack", "Fix would break the system",
+                   "Accepted risk", "Not reachable in production", "Duplicate", "Other"]
 
 # SAMPLE CODE (invented for the demo, not from any real repository). Each entry is
 # (first line number, lines); the flagged line is the one in the finding's location.
@@ -231,3 +231,214 @@ SEED_HISTORY = [
     ScanRecord("sample-org/clean-service", "Claude Opus", "Demo", "Oct 18, 2026",
                [], ["# invented sample scan", "[done] 0 findings"], "n/a", "n/a"),
 ]
+
+
+# SAMPLE DATA (invented): open findings per week for each sample repo, for the burndown
+# charts. Not real scan results.
+ALL_REPOS = "All repos"
+BURNDOWN_WEEKS = ["Week 1", "Week 2", "Week 3", "Week 4", "Week 5", "Week 6"]
+BURNDOWN_BY_REPO = {
+    "sample-org/sample-backend": [7, 7, 6, 6, 5, 5],
+    "sample-org/payments-api": [1, 1, 1, 1, 0, 0],
+    "sample-org/clean-service": [0, 0, 0, 0, 0, 0],
+}
+# The demo replay always produces this repo's sample findings, so its chart stands in for any repo.
+DEFAULT_BURNDOWN_REPO = "sample-org/sample-backend"
+
+
+def burndown_series(repo=ALL_REPOS):
+    """[(week label, open findings), ...] for one sample repo, or summed across all of them."""
+    if repo == ALL_REPOS:
+        values = [sum(week) for week in zip(*BURNDOWN_BY_REPO.values())]
+    else:
+        values = BURNDOWN_BY_REPO.get(repo, BURNDOWN_BY_REPO[DEFAULT_BURNDOWN_REPO])
+    return list(zip(BURNDOWN_WEEKS, values))
+
+
+def burndown_repo_key(repo):
+    """The sample repo whose burndown stands in for `repo` (itself if it has one)."""
+    return repo if repo in BURNDOWN_BY_REPO else DEFAULT_BURNDOWN_REPO
+
+
+def burndown_totals(series):
+    """(open, closed, total) from a burndown series: total is the first point, open the last."""
+    if not series:
+        return 0, 0, 0
+    total, still_open = series[0][1], series[-1][1]
+    return still_open, total - still_open, total
+
+
+# Scan phases shown in the scanning popup, in the order the scan log reaches them.
+SCAN_PHASES = ["Recon", "Hunt", "Verification", "Report"]
+HUNT_PHASE = 1
+SCAN_PHRASES = [
+    ["Detecting...", "Analyzing your repository...", "Scanning your code...",
+     "Mapping entry points..."],
+    ["Searching for vulnerabilities...", "Hunting for bugs...", "Hunting for vulnerabilities...",
+     "Looking for weak spots...", "Checking for exposed secrets...", "Tracing where input goes...",
+     "Tracing input to risky code...", "Checking every entry point...", "Sweeping the codebase...",
+     "Tracking down vulnerabilities...", "On the hunt...", "Following the trail...",
+     "Sniffing out bugs...", "Flushing out hidden flaws...", "Closing in on a finding...",
+     "Bagging the bugs...", "Asking the code some hard questions..."],
+    ["Ruling out false alarms..."],
+    ["Sorting by severity...", "Almost there. Counting what's left..."],
+]
+
+_PHASE_PREFIXES = (
+    ("[phase 4]", 3), ("[done]", 3), ("[+]", 3),
+    ("[phase 3", 2), ("[phase 2b]", 2),
+    ("[phase 2]", 1),
+    ("[phase 1]", 0), ("[scan]", 0),
+)
+
+
+def phase_of_line(line, current=0):
+    """Scan phase (0 to 3) a log line belongs to. Blank or unknown lines keep the current
+    phase, and the phase never moves backwards."""
+    for prefix, phase in _PHASE_PREFIXES:
+        if line.startswith(prefix):
+            return max(current, phase)
+    return current
+
+
+def severity_summary(findings):
+    """[(severity tier, count), ...] for the tiers that have findings, highest first."""
+    return [(tier, n) for tier in SEVERITY_ORDER
+            if (n := sum(f.severity == tier for f in findings))]
+
+
+def result_level(findings):
+    """'none' with no findings, 'high' if any High+ or High, otherwise 'other'."""
+    if not findings:
+        return "none"
+    return "high" if any(f.severity in ("High+", "High") for f in findings) else "other"
+
+
+# CWE names for the weaknesses in the sample findings, and the page that explains each one.
+CWE_NAMES = {
+    "CWE-78": "OS command injection",
+    "CWE-22": "Path traversal",
+    "CWE-400": "Uncontrolled resource consumption",
+    "CWE-494": "Download of code without integrity check",
+    "CWE-798": "Hard-coded credentials",
+}
+
+
+def cwe_name(cwe):
+    return CWE_NAMES.get(cwe, "")
+
+
+def cwe_url(cwe):
+    """The MITRE page for 'CWE-78', or '' if the id is not of that form."""
+    match = re.fullmatch(r"CWE-(\d+)", cwe or "")
+    return f"https://cwe.mitre.org/data/definitions/{match.group(1)}.html" if match else ""
+
+
+# A finding is closed once its fix is merged or verified, or a reviewer disputed it.
+CLOSED_STATUSES = ("Merged", "Verified", "Disputed")
+
+
+def is_open(finding):
+    return finding.status not in CLOSED_STATUSES
+
+
+def open_by_severity(findings):
+    """{tier: number of open findings} for the tiers that have any, highest first."""
+    return {tier: n for tier in SEVERITY_ORDER
+            if (n := sum(f.severity == tier and is_open(f) for f in findings))}
+
+
+def sample_repo_findings(repo=ALL_REPOS):
+    """The sample findings of one repo's latest sample scan, or of every repo."""
+    latest = {}
+    for record in SEED_HISTORY:
+        latest.setdefault(record.repo, record.findings)
+    if repo == ALL_REPOS:
+        return [f for findings in latest.values() for f in findings]
+    return list(latest.get(repo, []))
+
+
+# The findings board groups the statuses a finding can have into four columns of work.
+STATUS_GROUPS = {
+    "Open": ("Open",),
+    "In progress": ("Fix proposed", "PR open", "Fix accepted"),
+    "Disputed": ("Disputed",),
+    "Done": ("Verified", "Merged"),
+}
+
+
+def status_group(status):
+    for group, statuses in STATUS_GROUPS.items():
+        if status in statuses:
+            return group
+    return "Open"  # an unknown status still shows up, as open work
+
+
+def latest_scan_indexes(records):
+    """{repo: index of its latest scan} for a history that is newest first."""
+    latest = {}
+    for index, record in enumerate(records):
+        latest.setdefault(record.repo, index)
+    return latest
+
+
+# SAMPLE TEXT (invented for the demo): what is wrong and what an attacker can do, by weakness type.
+SAMPLE_ISSUES = {
+    "CWE-78": ("A value from the caller is placed into a shell command, so characters in it run as commands.",
+               "Run arbitrary commands on the machine that runs this code."),
+    "CWE-22": ("The output path is built from caller input without checking where it ends up.",
+               "Create or overwrite files outside the intended folder."),
+    "CWE-400": ("The request body has no size limit.",
+                "Send very large requests to use up memory and take the service down."),
+    "CWE-494": ("A file is downloaded over an unverified connection and used without a checksum.",
+                "Swap the download for malicious content that the tool then trusts."),
+    "CWE-798": ("A secret key is written into the source code.",
+                "Read the key from the code and call the service as the app."),
+}
+DEFAULT_SAMPLE_ISSUE = ("The flagged code can be abused by an attacker-controlled input.",
+                        "Misuse the flagged code path.")
+
+
+def sample_issue(finding):
+    """(what is wrong, what an attacker can do) for a finding. Sample text, not scanner output."""
+    return SAMPLE_ISSUES.get(finding.cwe, DEFAULT_SAMPLE_ISSUE)
+
+
+# Sorting for the findings tables.
+def severity_rank(severity):
+    return SEVERITY_ORDER.index(severity) if severity in SEVERITY_ORDER else len(SEVERITY_ORDER)
+
+
+def status_rank(status):
+    """Open work first, then in progress, disputed, done."""
+    order = [s for statuses in STATUS_GROUPS.values() for s in statuses]
+    return order.index(status) if status in order else len(order)
+
+
+def _natural(text):
+    return tuple(int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text.casefold()))
+
+
+def finding_sort_key(finding, field, repo=""):
+    """Sort key for one column: id, severity, title, location, status or repo."""
+    if field == "id":
+        return _natural(finding.id)
+    if field == "severity":
+        return (severity_rank(finding.severity), _natural(finding.id))
+    if field == "title":
+        return (finding.title.casefold(), _natural(finding.id))
+    if field == "location":
+        path, line = split_location(finding.location)
+        return (path.casefold(), line, _natural(finding.id))
+    if field == "status":
+        return (status_rank(finding.status), severity_rank(finding.severity), _natural(finding.id))
+    if field == "repo":
+        return (repo.casefold(), severity_rank(finding.severity), _natural(finding.id))
+    raise ValueError(f"unknown sort field: {field}")
+
+
+def repo_name(repo):
+    """'https://github.com/org/name(.git)' -> 'org/name', so one repo has one name. Other text is kept."""
+    text = (repo or "").strip()
+    match = re.fullmatch(r"(?:https?://)?(?:www\.)?github\.com/(.+?)(?:\.git)?/*", text, re.IGNORECASE)
+    return match.group(1) if match else text
